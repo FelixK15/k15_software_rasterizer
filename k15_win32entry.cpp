@@ -245,17 +245,21 @@ uint32 getTimeInMilliseconds(LARGE_INTEGER PerformanceFrequency)
 	return (uint32)(appTime.QuadPart / PerformanceFrequency.QuadPart);
 }
 
-void setup()
+bool setup()
 {
-	char buffer[512];
-	formatString(buffer, 512, "Could not initialize rasterizer context. Error:%s\n", "test test 123");
-
 	k15_software_rasterizer::context_init_parameters parameters;
 	parameters.backBufferWidth 	= screenWidth;
 	parameters.backBufferHeight = screenHeight;
 	
 	k15_software_rasterizer::context* pContext = nullptr;
 	const k15::result<void> initResult = k15_software_rasterizer::create_context( &pContext, parameters );
+	if( initResult.hasError() )
+	{
+		printFormattedText( "Could not create software rasterizer context. Error=%s\n", initResult.getError() );
+		return false;
+	}
+
+	return true;
 }
 
 void drawBackBuffer(HWND hwnd)

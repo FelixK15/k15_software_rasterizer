@@ -77,7 +77,8 @@ namespace k15
     enum class error_id
     {
         success,
-        out_of_memory
+        out_of_memory,
+        internal
     };
 
     string_view getErrorString( error_id errorId)
@@ -89,6 +90,9 @@ namespace k15
 
             case error_id::out_of_memory:
                 return "out of memory";
+            
+            case error_id::internal:
+                return "internal";
         }
 
         return string_view::empty;
@@ -109,7 +113,7 @@ namespace k15
             errorId = error;
         }
 
-        T        getValue() const
+        T getValue() const
         {
             K15_ASSERT(error == error_id::success);
             return value;
@@ -120,17 +124,17 @@ namespace k15
             return errorId;
         }
 
-        bool     hasError() const
+        bool hasError() const
         {
             return errorId != error_id::success;
         }
 
-        bool     isOk() const
+        bool isOk() const
         {
             return errorId == error_id::success;
         }
 
-        string_view     getErrorString() const
+        string_view getErrorString() const
         {
             return k15::getErrorString( errorId );
         }
@@ -154,23 +158,23 @@ namespace k15
             return errorId;
         }
 
-        bool     hasError() const
+        bool hasError() const
         {
             return errorId != error_id::success;
         }
 
-        bool     isOk() const
+        bool isOk() const
         {
             return errorId == error_id::success;
         }
 
-        string_view     getErrorString() const
+        string_view getErrorString() const
         {
             return k15::getErrorString( errorId );
         }
 
     private:
-        error_id    errorId;
+        error_id errorId;
     };
 
     template< typename T >
@@ -185,18 +189,171 @@ namespace k15
         return a > b ? a : b;
     }
 
-    size_t copyMemoryNonOverlapping8( byte* pDestination, size_t destinationSizeInBytes, const byte* pSource, size_t sourceSizeInBytes )
+    size_t copyMemoryNonOverlapping8( void* pDestination, size_t destinationSizeInBytes, const void* pSource, size_t sourceSizeInBytes )
     {
         const size_t numberOfBytesToCopy = getMin( destinationSizeInBytes, sourceSizeInBytes );
         size_t byteIndex = 0u;
+
+        byte* pDestinationBuffer = (byte*)pDestination;
+        byte* pSourceBuffer = (byte*)pSource;
+
         while( byteIndex < numberOfBytesToCopy )
         {
-            *pDestination++ = *pSource++;
+            *pDestinationBuffer++ = *pSourceBuffer++;
             ++byteIndex;
         }
 
         return numberOfBytesToCopy;
     }
+
+    template< typename T >
+    struct slice
+    {
+        typedef bool (growBufferFunction)( slice< T >* pSlice, uint32 capacity  );
+
+        slice()
+        {
+            pBuffer     = nullptr;
+            capacity    = 0u;
+            size        = 0u;
+        }
+        ~slice()
+        {
+
+        }
+
+        T* pushBack( T value )
+        {
+            T* pValue = pushBack();
+            *pValue = value;
+
+            return pValue;
+        }
+
+        T* pushBack()
+        {
+            return pushBackRange(1u);
+        }
+
+        T* pushBackRange(uint32 elementCount)
+        {
+            if( size + elementCount >= capacity )
+            {
+                if( !pGrowBufferFunction(this, size + elementCount) )
+                {
+                    return nullptr;
+                }
+            }
+
+            K15_ASSERT(pBuffer != nullptr);
+
+            T* pDataStart = pBuffer + size;
+            size += elementCount;
+            return pDataStart;
+        }
+
+        uint32 capacity;
+        uint32 size;
+
+        T*                  pBuffer;
+        growBufferFunction* pGrowBufferFunction;
+    };
+
+    template< typename T, uint32 Size = 0 >
+    struct dynamic_array : slice< T >
+    {
+        dynamic_array()
+        {
+            pBuffer = staticBuffer;
+            capacity = Size;
+            size = 0;
+            pGrowBufferFunction = dynamic_array<T, Size>::growBuffer;
+        }
+        ~dynamic_array()
+        {
+            freeBuffer();
+        }
+
+        void freeBuffer()
+        {
+            if (pBuffer != staticBuffer)
+            {
+                free(pBuffer);
+                pBuffer = nullptr;
+            }
+        }
+
+        static bool growBuffer( slice< T >* pSlice, uint32 capacity  )
+        {
+            dynamic_array<T, Size>* pArray = (dynamic_array<T, Size>*)pSlice;
+            const int newCapacity = getMax(capacity, pArray->capacity * 2);
+
+            if( newCapacity < Size )
+            {
+                return true;
+            }
+
+            const size_t newBufferSizeInBytes = sizeof(T) * newCapacity;
+            T* pNewBuffer = (T*)malloc( newBufferSizeInBytes );
+            if (pNewBuffer == nullptr)
+            {
+                return false;
+            }
+
+            copyMemoryNonOverlapping8( pNewBuffer, newBufferSizeInBytes, pArray->pBuffer, pArray->size );
+            pArray->freeBuffer();
+
+            pArray->capacity = newCapacity;
+            pArray->pBuffer = pNewBuffer;
+
+            return true;
+        }
+
+        T staticBuffer[Size];
+    };
+
+    template< typename T >
+    struct dynamic_array< T, 0u > : slice< T >
+    {
+        dynamic_array()
+        {
+            pBuffer     = nullptr;
+            capacity    = 0u;
+            size        = 0;
+            pGrowBufferFunction = dynamic_array< T >::growBuffer;
+        }
+
+        ~dynamic_array()
+        {
+            freeBuffer();
+        }
+
+        void freeBuffer()
+        {
+            free(pBuffer);
+            pBuffer = nullptr;
+        }
+
+        static bool growBuffer( slice< T >* pSlice, uint32 capacity )
+        {
+            dynamic_array< T >* pArray = (dynamic_array< T >*)pSlice;
+            const int newCapacity = capacity;
+
+            T* pNewBuffer = (T*)malloc(sizeof(T) * newCapacity);
+            if (pNewBuffer == nullptr)
+            {
+                return false;
+            }
+
+            memcpy( pNewBuffer, pArray->pBuffer, pArray->size );
+            pArray->freeBuffer();
+
+            pArray->capacity = newCapacity;
+            pArray->pBuffer = pNewBuffer;
+
+            return true;
+        }
+    };
 
     enum class format_type_id
     {
@@ -241,19 +398,29 @@ namespace k15
         return format_type::invalid;
     }
 
-    size_t formatString( char* pBuffer, size_t bufferSizeInBytes, const string_view& value )
+    result< void > formatString( slice< char >* pTarget, const string_view& value )
     {
-        return copyMemoryNonOverlapping8( (byte*)pBuffer, bufferSizeInBytes, (const byte*)value.getStart(), value.getLength() );
+        char* pBuffer = pTarget->pushBackRange( value.getLength() );
+        if( pBuffer == nullptr )
+        {
+            return error_id::out_of_memory;
+        }
+        const size_t bytesCopied = copyMemoryNonOverlapping8( (byte*)pBuffer, value.getLength(), (const byte*)value.getStart(), value.getLength() );
+        return bytesCopied == value.getLength() ? error_id::success : error_id::internal;
+    }
+
+    result< void > formatString( slice< char >* pTarget, const error_id& errorId)
+    {
+        return formatString( pTarget, getErrorString( errorId ) );
     }
 
     template< typename... Args >
-    error_id formatString( char* pBuffer, size_t bufferSizeInBytes, const string_view& format, Args... args )
+    result< void > formatString( slice< char >* pTarget, const string_view& format, Args... args )
     {
-        const char* pBufferEnd = pBuffer + bufferSizeInBytes;
         const size_t formatLength = format.getLength();
         size_t formatCharIndex = 0u;
 
-        while( formatCharIndex < formatLength && pBuffer < pBufferEnd )
+        while( formatCharIndex < formatLength )
         {
             const char formatChar = format[ formatCharIndex ];
             if( formatChar == '%' )
@@ -261,26 +428,32 @@ namespace k15
                 const format_type type = parseFormatType( format, formatCharIndex );
                 if (type.typeId == format_type_id::stringType)
                 {
-                    const size_t charsWritten = formatString( pBuffer, bufferSizeInBytes, args... );
-                    pBuffer = pBuffer + charsWritten;
-
+                    const result< void > formatResult = formatString( pTarget, args... );
+                    if ( formatResult.hasError() )
+                    {
+                        return formatResult;
+                    }
                 }
 
                 formatCharIndex += type.formatLength;
             }
             else
             {
-                *pBuffer++ = formatChar;
+                if( pTarget->pushBack( formatChar ) == nullptr )
+                {
+                    return error_id::out_of_memory;
+                }
+
                 ++formatCharIndex;
             }
         }
 
-        if( pBuffer < pBufferEnd )
-        {
-            *pBuffer = 0;
-        }
+        pTarget->pushBack( 0 );
         return error_id::success;
     }
+
+    template< typename... Args
+    result< void > printFormattedString()
 }
 
 #endif //K15_BASE_INCLUDE
