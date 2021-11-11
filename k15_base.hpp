@@ -4,6 +4,8 @@
 #define K15_ASSERT(x) if(!(x)){  }
 #define K15_UNUSED_VARIABLE(x) (void)(x)
 
+#include "stdio.h"
+
 namespace k15
 {
     typedef unsigned char   bool8;
@@ -12,6 +14,8 @@ namespace k15
     typedef unsigned int    uint32;
     typedef unsigned short  uint16;
     typedef unsigned char   uint8;
+    typedef float           float32;
+    typedef double          float64;
 
     size_t getStringLength( const char* pString )
     {
@@ -207,10 +211,22 @@ namespace k15
     }
 
     template< typename T >
+    void fillMemory( void* pDestination, T value, size_t elementCount )
+    {
+        T* pDestinationBuffer = (T*)pDestination;
+        while( elementCount-- > 0u )
+        {
+            *pDestinationBuffer++ = value;
+        }
+    }
+
+    template< typename T >
     struct slice
     {
+    protected:
         typedef bool (growBufferFunction)( slice< T >* pSlice, uint32 capacity  );
-
+    
+    public:
         slice()
         {
             pBuffer     = nullptr;
@@ -220,6 +236,31 @@ namespace k15
         ~slice()
         {
 
+        }
+
+        T* getStart()
+        {
+            return pBuffer;
+        }
+
+        T* getEnd()
+        {
+            return pBuffer + capacity;
+        }
+
+        const T* getStart() const
+        {
+            return pBuffer;
+        }
+
+        const T* getEnd() const
+        {
+            return pBuffer + capacity;
+        }
+
+        size_t getSize() const
+        {
+            return size;
         }
 
         T* pushBack( T value )
@@ -252,6 +293,7 @@ namespace k15
             return pDataStart;
         }
 
+    protected:
         uint32 capacity;
         uint32 size;
 
@@ -262,6 +304,7 @@ namespace k15
     template< typename T, uint32 Size = 0 >
     struct dynamic_array : slice< T >
     {
+    public:
         dynamic_array()
         {
             pBuffer = staticBuffer;
@@ -309,12 +352,14 @@ namespace k15
             return true;
         }
 
+    private:
         T staticBuffer[Size];
     };
 
     template< typename T >
     struct dynamic_array< T, 0u > : slice< T >
     {
+    public:
         dynamic_array()
         {
             pBuffer     = nullptr;
@@ -452,8 +497,19 @@ namespace k15
         return error_id::success;
     }
 
-    template< typename... Args
-    result< void > printFormattedString()
+    template< typename... Args >
+    result< void > printFormattedString( const string_view& format, Args... args )
+    {
+        dynamic_array<char, 128> textBuffer;
+        const result< void > formatStringResult = formatString( &textBuffer, format, args... );
+        if (formatStringResult.hasError())
+        {
+            return formatStringResult;
+        }
+
+        fwrite( textBuffer.getStart(), 1u, textBuffer.getSize(), stdout );
+        return error_id::success;
+    }
 }
 
 #endif //K15_BASE_INCLUDE

@@ -16,26 +16,6 @@ typedef LRESULT(CALLBACK* WNDPROC)(HWND, UINT, WPARAM, LPARAM);
 
 using namespace k15;
 
-void printErrorToFile(const char* pFileName)
-{
-	DWORD errorId = GetLastError();
-	char* textBuffer = 0;
-	DWORD writtenChars = FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ALLOCATE_BUFFER, 0, errorId, 
-		MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), (LPSTR)&textBuffer, 512, 0);
-
-	if (writtenChars > 0)
-	{
-		FILE* file = fopen(pFileName, "w");
-
-		if (file)
-		{
-			fwrite(textBuffer, writtenChars, 1, file);			
-			fflush(file);
-			fclose(file);
-		}
-	}
-}
-
 void allocateDebugConsole()
 {
 	AllocConsole();
@@ -43,11 +23,8 @@ void allocateDebugConsole()
 	freopen("CONOUT$", "w", stdout);
 }
 
-#ifdef K15_GREYSCALE
-uint8* pBackBufferPixels = 0;
-#else
+software_rasterizer_context* pContext = nullptr;
 uint32* pBackBufferPixels = 0;
-#endif
 
 BITMAPINFO* pBackBufferBitmapInfo = 0;
 HBITMAP backBufferBitmap = 0;
@@ -70,25 +47,6 @@ void createBackBuffer(HWND hwnd, int width, int height)
 		backBufferBitmap = NULL;
 	}
 
-#ifdef K15_GREYSCALE
-	pBackBufferBitmapInfo = malloc( sizeof(BITMAPINFO) + sizeof(RGBQUAD) * 256 );
-	RGBQUAD* pRGBValues = (RGBQUAD*)((uint8*)pBackBufferBitmapInfo + sizeof(BITMAPINFO));
-
-	for(int i = 0; i < 256; ++i)
-	{
-		pRGBValues[i].rgbRed 	= (uint8)i;
-		pRGBValues[i].rgbBlue 	= (uint8)i;
-		pRGBValues[i].rgbGreen 	= (uint8)i;
-		pRGBValues[i].rgbReserved = 0;
-	}
-
-	pBackBufferBitmapInfo->bmiHeader.biSize = sizeof(BITMAPINFO);
-	pBackBufferBitmapInfo->bmiHeader.biWidth = width;
-	pBackBufferBitmapInfo->bmiHeader.biHeight = -(int)height;
-	pBackBufferBitmapInfo->bmiHeader.biPlanes = 1;
-	pBackBufferBitmapInfo->bmiHeader.biBitCount = 8;
-	pBackBufferBitmapInfo->bmiHeader.biCompression = BI_RGB;
-#else
 	pBackBufferBitmapInfo = ( BITMAPINFO* )malloc( sizeof(BITMAPINFO) );
 	pBackBufferBitmapInfo->bmiHeader.biSize = sizeof(BITMAPINFO);
 	pBackBufferBitmapInfo->bmiHeader.biWidth = width;
@@ -97,7 +55,6 @@ void createBackBuffer(HWND hwnd, int width, int height)
 	pBackBufferBitmapInfo->bmiHeader.biBitCount = 32;
 	pBackBufferBitmapInfo->bmiHeader.biCompression = BI_RGB;
 	//FK: XRGB
-#endif
 
 	HDC deviceContext = GetDC(hwnd);
 	backBufferBitmap = CreateDIBSection( deviceContext, pBackBufferBitmapInfo, DIB_RGB_COLORS, (void**)&pBackBufferPixels, NULL, 0 );   
@@ -108,6 +65,11 @@ void createBackBuffer(HWND hwnd, int width, int height)
 
 	screenWidth = width;
 	screenHeight = height;
+
+	if( pContext != nullptr )
+	{
+		set_back_buffer( pContext, pBackBufferPixels, screenWidth, screenHeight );
+	}
 }
 
 void K15_WindowCreated(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -230,6 +192,7 @@ HWND setupWindow(HINSTANCE instance, int width, int height)
 
 		const int cWidth = clientRect.right - clientRect.left;
 		const int cHeight = clientRect.bottom - clientRect.top;
+		
 		createBackBuffer(hwnd, cWidth, cHeight);
 	}
 	return hwnd;
@@ -247,15 +210,15 @@ uint32 getTimeInMilliseconds(LARGE_INTEGER PerformanceFrequency)
 
 bool setup()
 {
-	k15_software_rasterizer::context_init_parameters parameters;
+	software_rasterizer_context_init_parameters parameters;
 	parameters.backBufferWidth 	= screenWidth;
 	parameters.backBufferHeight = screenHeight;
+	parameters.pBackBuffer 		= pBackBufferPixels;
 	
-	k15_software_rasterizer::context* pContext = nullptr;
-	const k15::result<void> initResult = k15_software_rasterizer::create_context( &pContext, parameters );
+	const k15::result<void> initResult = create_software_rasterizer_context( &pContext, parameters );
 	if( initResult.hasError() )
 	{
-		printFormattedText( "Could not create software rasterizer context. Error=%s\n", initResult.getError() );
+		printFormattedString( "Could not create software rasterizer context. Error=%s\n", initResult.getError() );
 		return false;
 	}
 
@@ -268,16 +231,18 @@ void drawBackBuffer(HWND hwnd)
 	StretchDIBits( deviceContext, 0, 0, screenWidth, screenHeight, 0, 0, screenWidth, screenHeight, 
 		pBackBufferPixels, pBackBufferBitmapInfo, DIB_RGB_COLORS, SRCCOPY );  
 
-#ifdef K15_GREYSCALE
-	memset(pBackBufferPixels, 0, screenWidth * screenHeight);
-#else
-	memset(pBackBufferPixels, 0, screenWidth * screenHeight * sizeof(int));
-#endif
+	fillMemory< uint32 >( pBackBufferPixels, 0u, screenWidth * screenHeight );
 }
 
 void doFrame(uint32 DeltaTimeInMS)
 {
+	begin_geometry( pContext, topology::triangle );
+	vertex_position( pContext, 1.0f, 1.0f, 1.0f );
+	vertex_position( pContext, 1.0f, 1.0f, 1.0f );
+	vertex_position( pContext, 1.0f, 1.0f, 1.0f );
+	end_geometry( pContext );
 
+	draw_geometry( pContext );
 }
 
 int CALLBACK WinMain(HINSTANCE hInstance,
