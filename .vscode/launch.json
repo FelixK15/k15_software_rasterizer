@@ -8,12 +8,11 @@
             "name": "(Windows) Launch",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "k15_win32rasterizer.exe",
+            "program": "${workspaceFolder}/build_debug/k15_win32_rasterizer.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": true
+            "environment": []
         }
     ]
 }

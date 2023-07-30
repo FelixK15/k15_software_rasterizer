@@ -1,21 +1,29 @@
 #ifndef K15_BASE_INCLUDE
 #define K15_BASE_INCLUDE
 
-#define K15_ASSERT(x) if(!(x)){  }
+#define K15_ASSERT(x) if(!(x)){  __debugbreak(); }
 #define K15_UNUSED_VARIABLE(x) (void)(x)
 
-#include "stdio.h"
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include <limits.h>
 
 namespace k15
 {
     typedef unsigned char   bool8;
     typedef unsigned int    bool32;
     typedef unsigned char   byte;
-    typedef unsigned int    uint32;
-    typedef unsigned short  uint16;
-    typedef unsigned char   uint8;
     typedef float           float32;
     typedef double          float64;
+
+    template< typename T1, typename T2 >
+    T1 rangecheck_cast(T2 value)
+    {
+        return (T1)value;
+    }
 
     size_t getStringLength( const char* pString )
     {
@@ -224,7 +232,7 @@ namespace k15
     struct slice
     {
     protected:
-        typedef bool (growBufferFunction)( slice< T >* pSlice, uint32 capacity  );
+        typedef bool (growBufferFunction)( slice< T >* pSlice, uint32_t capacity  );
     
     public:
         slice()
@@ -276,7 +284,7 @@ namespace k15
             return pushBackRange(1u);
         }
 
-        T* pushBackRange(uint32 elementCount)
+        T* pushBackRange(uint32_t elementCount)
         {
             if( size + elementCount >= capacity )
             {
@@ -293,15 +301,25 @@ namespace k15
             return pDataStart;
         }
 
+        T operator[](size_t index)
+        {
+            return pBuffer[index];
+        }
+
+        const T operator[](size_t index) const
+        {
+            return pBuffer[index];
+        }
+
     protected:
-        uint32 capacity;
-        uint32 size;
+        uint32_t capacity;
+        uint32_t size;
 
         T*                  pBuffer;
         growBufferFunction* pGrowBufferFunction;
     };
 
-    template< typename T, uint32 Size = 0 >
+    template< typename T, uint32_t Size = 0 >
     struct dynamic_array : slice< T >
     {
     public:
@@ -326,7 +344,7 @@ namespace k15
             }
         }
 
-        static bool growBuffer( slice< T >* pSlice, uint32 capacity  )
+        static bool growBuffer( slice< T >* pSlice, uint32_t capacity  )
         {
             dynamic_array<T, Size>* pArray = (dynamic_array<T, Size>*)pSlice;
             const int newCapacity = getMax(capacity, pArray->capacity * 2);
@@ -379,7 +397,7 @@ namespace k15
             pBuffer = nullptr;
         }
 
-        static bool growBuffer( slice< T >* pSlice, uint32 capacity )
+        static bool growBuffer( slice< T >* pSlice, uint32_t capacity )
         {
             dynamic_array< T >* pArray = (dynamic_array< T >*)pSlice;
             const int newCapacity = capacity;
@@ -390,7 +408,7 @@ namespace k15
                 return false;
             }
 
-            memcpy( pNewBuffer, pArray->pBuffer, pArray->size );
+            memcpy( pNewBuffer, pArray->pBuffer, pArray->size * sizeof(T) );
             pArray->freeBuffer();
 
             pArray->capacity = newCapacity;
@@ -445,7 +463,7 @@ namespace k15
 
     result< void > formatString( slice< char >* pTarget, const string_view& value )
     {
-        char* pBuffer = pTarget->pushBackRange( value.getLength() );
+        char* pBuffer = pTarget->pushBackRange( rangecheck_cast<char>( value.getLength() ) );
         if( pBuffer == nullptr )
         {
             return error_id::out_of_memory;

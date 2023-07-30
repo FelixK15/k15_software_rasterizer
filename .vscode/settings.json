@@ -1,0 +1,27 @@
+{
+    "files.associations": {
+        "new": "cpp",
+        "memory_resource": "cpp",
+        "iomanip": "cpp",
+        "string_view": "cpp",
+        "xstring": "cpp",
+        "deque": "cpp",
+        "initializer_list": "cpp",
+        "list": "cpp",
+        "random": "cpp",
+        "regex": "cpp",
+        "stack": "cpp",
+        "type_traits": "cpp",
+        "vector": "cpp",
+        "xhash": "cpp",
+        "xtree": "cpp",
+        "xutility": "cpp",
+        "chrono": "cpp",
+        "iterator": "cpp",
+        "map": "cpp",
+        "memory": "cpp",
+        "unordered_map": "cpp",
+        "xtr1common": "cpp",
+        "xiosbase": "cpp"
+    }
+}
