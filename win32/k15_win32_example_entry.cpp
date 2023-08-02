@@ -1,9 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 
-#include "k15_base.hpp"
-
 #define K15_SOFTWARE_RASTERIZER_IMPLEMENTATION
-#include "k15_software_rasterizer.hpp"
+#include "../k15_software_rasterizer.hpp"
 
 #define NOMINMAX
 #include <windows.h>
@@ -15,8 +13,6 @@
 
 typedef LRESULT(CALLBACK* WNDPROC)(HWND, UINT, WPARAM, LPARAM);
 
-using namespace k15;
-
 void allocateDebugConsole()
 {
 	AllocConsole();
@@ -24,7 +20,7 @@ void allocateDebugConsole()
 	freopen("CONOUT$", "w", stdout);
 }
 
-software_rasterizer_context* pContext = nullptr;
+software_rasterizer_context_t* pContext = nullptr;
 uint32_t* pBackBufferPixels = 0;
 
 BITMAPINFO* pBackBufferBitmapInfo = 0;
@@ -36,10 +32,10 @@ int virtualScreenHeight = 240;
 int screenWidth = virtualScreenWidth*3;
 int screenHeight = virtualScreenHeight*3;
 
-vector3 cameraPos = {};
-vector3 cameraVelocity = {};
+vector3f_t cameraPos = {};
+vector3f_t cameraVelocity = {};
 
-constexpr vector3 test_cube_vertices[] = {
+constexpr vector3f_t test_cube_vertices[] = {
 	{-0.5f, -0.5f, 1.0f},
 	{ 0.5f, -0.5f, 1.0f},
 	{-0.5f,  0.5f, 1.0f},
@@ -89,6 +85,12 @@ constexpr vector3 test_cube_vertices[] = {
 	{ 0.5f, -0.5f, 2.0f},
 };
 
+constexpr vector3f_t test_triangle_vertices[] = {
+	{ -1.0f, -1.0f, 1.0f},
+	{  0.0f,  1.0f, 1.0f},
+	{  1.0f, -1.0f, 1.0f}
+};
+
 void createBackBuffer(HWND hwnd, int width, int height)
 {		
 	if (pBackBufferBitmapInfo != NULL)
@@ -104,7 +106,7 @@ void createBackBuffer(HWND hwnd, int width, int height)
 		backBufferBitmap = NULL;
 	}
 
-	pBackBufferBitmapInfo = ( BITMAPINFO* )malloc( sizeof(BITMAPINFO) );
+	pBackBufferBitmapInfo = (BITMAPINFO*)malloc(sizeof(BITMAPINFO));
 	pBackBufferBitmapInfo->bmiHeader.biSize = sizeof(BITMAPINFO);
 	pBackBufferBitmapInfo->bmiHeader.biWidth = width;
 	pBackBufferBitmapInfo->bmiHeader.biHeight = -(int)height;
@@ -114,7 +116,7 @@ void createBackBuffer(HWND hwnd, int width, int height)
 	//FK: XRGB
 
 	HDC deviceContext = GetDC(hwnd);
-	backBufferBitmap = CreateDIBSection( deviceContext, pBackBufferBitmapInfo, DIB_RGB_COLORS, (void**)&pBackBufferPixels, NULL, 0 );   
+	backBufferBitmap = CreateDIBSection(deviceContext, pBackBufferBitmapInfo, DIB_RGB_COLORS, (void**)&pBackBufferPixels, NULL, 0);   
 	if (backBufferBitmap == NULL && pBackBufferPixels == NULL)
 	{
 		MessageBoxA(0, "Error during CreateDIBSection.", "Error!", 0);
@@ -214,7 +216,7 @@ void K15_WindowResized(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 
 LRESULT CALLBACK K15_WNDPROC(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 {
-	bool8 messageHandled = false;
+	bool messageHandled = false;
 
 	switch (message)
 	{
@@ -301,10 +303,10 @@ HWND setupWindow(HINSTANCE instance, int width, int height)
 		screenWidth = windowWidth;
 		screenHeight = windowHeight;
 
-		if( pContext != nullptr )
+		if(pContext != nullptr)
 		{
 			uint32_t stride = virtualScreenWidth;
-			set_back_buffer( pContext, pBackBufferPixels, virtualScreenWidth, virtualScreenHeight, stride );
+			k15_change_color_buffers(pContext, (void**)&pBackBufferPixels, 1u, virtualScreenWidth, virtualScreenHeight, stride);
 		}
 	}
 	return hwnd;
@@ -322,57 +324,59 @@ uint32_t getTimeInMilliseconds(LARGE_INTEGER PerformanceFrequency)
 
 bool setup()
 {
-	software_rasterizer_context_init_parameters parameters;
+	software_rasterizer_context_init_parameters_t parameters;
 	parameters.backBufferWidth 	= virtualScreenWidth;
 	parameters.backBufferHeight = virtualScreenHeight;
 	parameters.backBufferStride = virtualScreenWidth;
-	parameters.pBackBuffer 		= pBackBufferPixels;
+	parameters.pColorBuffers[0]	= pBackBufferPixels;
+	parameters.colorBufferCount = 1;
 	
-	const k15::result<void> initResult = create_software_rasterizer_context( &pContext, parameters );
-	if( initResult.hasError() )
-	{
-		printFormattedString( "Could not create software rasterizer context. Error=%s\n", initResult.getError() );
-		return false;
-	}
-
-	return true;
+	return k15_create_software_rasterizer_context(&pContext, &parameters);
 }
 
 void drawBackBuffer(HWND hwnd)
 {
-	HDC deviceContext = GetDC( hwnd );
-	StretchDIBits( deviceContext, 0, 0, screenWidth, screenHeight, 0, 0, virtualScreenWidth, virtualScreenHeight, 
-		pBackBufferPixels, pBackBufferBitmapInfo, DIB_RGB_COLORS, SRCCOPY );  
+	HDC deviceContext = GetDC(hwnd);
+	StretchDIBits(deviceContext, 0, 0, screenWidth, screenHeight, 0, 0, virtualScreenWidth, virtualScreenHeight, 
+		pBackBufferPixels, pBackBufferBitmapInfo, DIB_RGB_COLORS, SRCCOPY);  
 
-	fillMemory< uint32_t >( pBackBufferPixels, 0u, virtualScreenWidth * virtualScreenHeight );
+	memset(pBackBufferPixels, 0u, virtualScreenWidth * virtualScreenHeight * sizeof(uint32_t));
 }
 
 void doFrame(uint32_t DeltaTimeInMS)
 {
 #if 1
-	begin_geometry( pContext, topology::triangle );
+	const vector3f_t* pGeometry = test_cube_vertices;
+	const uint32_t geometryVertexCount = sizeof(test_cube_vertices)/sizeof(vector3f_t);
+#else
+	const vector3f_t* pGeometry = test_triangle_vertices;
+	const uint32_t geometryVertexCount = sizeof(test_triangle_vertices)/sizeof(vector3f_t);
+#endif
 
-	constexpr uint32_t vertexCount = sizeof(test_cube_vertices)/sizeof(vector3);
-	for(uint32_t i = 0; i < vertexCount; ++i)
+#if 1
+	k15_begin_geometry(pContext, topology_t::triangle);
+	for(uint32_t i = 0; i < geometryVertexCount; ++i)
 	{
-		vertex_position( pContext, test_cube_vertices[i].x, test_cube_vertices[i].y, test_cube_vertices[i].z );
+		k15_vertex_position(pContext, pGeometry[i].x, pGeometry[i].y, pGeometry[i].z);
 	}
 
-	end_geometry( pContext );
+	k15_end_geometry(pContext);
 #else
-	begin_geometry( pContext, topology::triangle );
-	vertex_position( pContext, -0.5f, 0.0f, 1.0f );
-	vertex_position( pContext, 0.0f, 0.5f, 1.0f );
-	vertex_position( pContext, 0.5f, 0.0f, 1.0f );
-	end_geometry( pContext );
+	begin_geometry(pContext, topology::triangle);
+	vertex_position(pContext, -0.5f, 0.0f, 1.0f);
+	vertex_position(pContext, 0.0f, 0.5f, 1.0f);
+	vertex_position(pContext, 0.5f, 0.0f, 1.0f);
+	end_geometry(pContext);
 #endif
 	
 	cameraPos.x += cameraVelocity.x;
 	cameraPos.y += cameraVelocity.y;
 	cameraPos.z += cameraVelocity.z;
 
-	set_camera_pos( pContext, cameraPos );
-	draw_geometry( pContext );
+	k15_set_camera_pos(pContext, cameraPos);
+
+	k15_draw_frame(pContext);
+	k15_swap_color_buffers(pContext);
 }
 
 int CALLBACK WinMain(HINSTANCE hInstance,
@@ -397,7 +401,7 @@ int CALLBACK WinMain(HINSTANCE hInstance,
 	uint32_t timeFrameEnded = 0;
 	uint32_t deltaMs = 0;
 
-	bool8 loopRunning = true;
+	bool loopRunning = true;
 	MSG msg = {0};
 
 	while (loopRunning)

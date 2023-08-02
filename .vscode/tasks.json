@@ -4,19 +4,41 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build K15 Project",
+            "label": "Build Software Rasterizer (Debug)",
             "type": "shell",
-            "command": "./build.sh",
             "windows": {
                 "command": "build.bat",
-                "args": ["debug"]
+                "options": {
+                    "cwd": "win32"
+                },
+                "args": ["debug"],
+                "problemMatcher": [
+                    "$msCompile"
+                ]
             },
-            "problemMatcher": [
-                "$msCompile"
-            ],
+      
             "group": {
                 "kind": "build",
                 "isDefault": true
+            }
+        },
+        {
+            "label": "Build Tests (Debug)",
+            "type": "shell",
+            "windows": {
+                "command": "build_tests.bat",
+                "options": {
+                    "cwd": "win32"
+                },
+                "args": ["debug"],
+                "problemMatcher": [
+                    "$msCompile"
+                ]
+            },
+      
+            "group": {
+                "kind": "build",
+                "isDefault": false
             }
         }
     ]
