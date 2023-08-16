@@ -3,4 +3,4 @@
 *.pdb
 *.obj
 .cl_path.txt
-.cached_path
+*.cached_path
