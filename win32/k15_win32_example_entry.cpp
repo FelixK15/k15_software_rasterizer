@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #define K15_SOFTWARE_RASTERIZER_IMPLEMENTATION
+#define K15_SOFTWARE_RASTERIZER_TRACK_STATISTICS
 #include "../k15_software_rasterizer.hpp"
 
 #define NOMINMAX
@@ -32,7 +33,7 @@ int virtualScreenHeight = 240;
 int screenWidth = virtualScreenWidth*3;
 int screenHeight = virtualScreenHeight*3;
 
-vector3f_t cameraPos = {};
+vector3f_t cameraPos = {0.0f, 0.0f, 4.0f};
 vector3f_t cameraVelocity = {};
 
 constexpr vector3f_t test_cube_vertices[] = {
@@ -86,9 +87,9 @@ constexpr vector3f_t test_cube_vertices[] = {
 };
 
 constexpr vector3f_t test_triangle_vertices[] = {
-	{ -1.0f, -1.0f, 1.0f},
-	{  0.0f,  1.0f, 1.0f},
-	{  1.0f, -1.0f, 1.0f}
+	{ -0.5f, -0.25f, 2.0f},
+	{  0.0f,  0.5f, 2.0f},
+	{  0.5f, -0.5f, 2.0f}
 };
 
 void createBackBuffer(HWND hwnd, int width, int height)
@@ -143,7 +144,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.z -= 0.01f;
+			cameraVelocity.z = 0.001f;
 		}
 		else if(isKeyUp)
 		{
@@ -155,7 +156,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.z += 0.01f;
+			cameraVelocity.z = -0.001f;
 		}
 		else if(isKeyUp)
 		{
@@ -167,7 +168,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.x += 0.01f;
+			cameraVelocity.x = 0.001f;
 		}
 		else if(isKeyUp)
 		{
@@ -179,7 +180,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.x -= 0.01f;
+			cameraVelocity.x = -0.001f;
 		}
 		else if(isKeyUp)
 		{
@@ -337,15 +338,26 @@ bool setup()
 void drawBackBuffer(HWND hwnd)
 {
 	HDC deviceContext = GetDC(hwnd);
+
 	StretchDIBits(deviceContext, 0, 0, screenWidth, screenHeight, 0, 0, virtualScreenWidth, virtualScreenHeight, 
 		pBackBufferPixels, pBackBufferBitmapInfo, DIB_RGB_COLORS, SRCCOPY);  
 
+	software_rasterizer_context_statistics_t statistics = k15_get_software_rasterizer_statistics(pContext);
+	char statisticsTextBuffer[512] = {};
+	const int textBufferLength = sprintf(statisticsTextBuffer, "Triangles drawn: %u\nTriangles culled: %u\nTriangles after clipping: %u", statistics.trianglesDrawn, statistics.trianglesCulled, statistics.trianglesAfterClipping);
+
+	RECT bla = {};
+	GetClientRect(hwnd, &bla);
+
+	SetTextColor(deviceContext, RGB(255, 255, 255));
+	SetBkColor(deviceContext, TRANSPARENT);
+	DrawText(deviceContext, statisticsTextBuffer, textBufferLength, &bla, DT_LEFT | DT_TOP);
 	memset(pBackBufferPixels, 0u, virtualScreenWidth * virtualScreenHeight * sizeof(uint32_t));
 }
 
 void doFrame(uint32_t DeltaTimeInMS)
 {
-#if 1
+#if 0
 	const vector3f_t* pGeometry = test_cube_vertices;
 	const uint32_t geometryVertexCount = sizeof(test_cube_vertices)/sizeof(vector3f_t);
 #else

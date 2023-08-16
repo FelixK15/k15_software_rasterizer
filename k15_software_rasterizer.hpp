@@ -52,6 +52,15 @@ struct software_rasterizer_context_init_parameters_t
     uint8_t     colorBufferCount;
 };
 
+struct software_rasterizer_context_statistics_t
+{
+    uint32_t trianglesDrawn;
+    uint32_t trianglesAfterClipping;
+    uint32_t trianglesCulled;
+};
+
+software_rasterizer_context_statistics_t  k15_get_software_rasterizer_statistics(const software_rasterizer_context_t* pContext);
+
 bool    k15_create_software_rasterizer_context(software_rasterizer_context_t** pOutContextPtr, const software_rasterizer_context_init_parameters_t* pParameters);
 
 void    k15_swap_color_buffers(software_rasterizer_context_t* pContext);
@@ -68,7 +77,15 @@ void    k15_vertex_uv(software_rasterizer_context_t* pContext, float u, float v)
 
 #ifdef K15_SOFTWARE_RASTERIZER_IMPLEMENTATION
 
-#define RuntimeAssert(x) if(!(x)){  __debugbreak(); }
+#ifdef _MSC_BUILD
+#define restrict_modifier       __restrict
+#define RuntimeAssert(x)        if(!(x)){  __debugbreak(); }
+#else
+#warning No support for this compiler
+#define restrict_modifier
+#define RuntimeAssert(x)
+#endif
+
 #define RuntimeAssertMsg(x, msg) RuntimeAssert(x)
 #define UnusedVariable(x) (void)(x)
 
@@ -108,12 +125,37 @@ struct triangle2i_t
     vector2i_t points[3];
 };
 
+template<typename T>
+struct base_static_buffer_t
+{
+protected:
+    base_static_buffer_t() {};
+
+public:
+    uint32_t    capacity;
+    uint32_t    count;
+    T*          pStaticData;
+};
+
+template<typename T>
 struct dynamic_buffer_t
 {
     uint32_t    count;
     uint32_t    capacity;
-    uint32_t    elementSizeInBytes;
-    void*       pData;
+    T*          pData;
+};
+
+template<typename T, uint32_t SIZE>
+struct static_buffer_t : public base_static_buffer_t<T>
+{
+    static_buffer_t() 
+    {
+        pStaticData = data;
+        capacity = 0;
+        count = 0;
+    }
+
+    T data[SIZE];
 };
 
 struct software_rasterizer_settings_t
@@ -123,25 +165,27 @@ struct software_rasterizer_settings_t
 
 struct software_rasterizer_context_t
 {
-    software_rasterizer_settings_t      settings;
-    uint8_t                             colorBufferCount;
-    uint8_t                             currentColorBufferIndex;
-    uint8_t                             currentTriangleVertexIndex;
+    software_rasterizer_context_statistics_t    statistics;
+    software_rasterizer_settings_t              settings;
+    uint8_t                                     colorBufferCount;
+    uint8_t                                     currentColorBufferIndex;
+    uint8_t                                     currentTriangleVertexIndex;
 
-    topology_t                          currentTopology;
+    topology_t                                  currentTopology;
 
-    uint32_t                            backBufferWidth;
-    uint32_t                            backBufferHeight;
-    uint32_t                            backBufferStride;
+    uint32_t                                    backBufferWidth;
+    uint32_t                                    backBufferHeight;
+    uint32_t                                    backBufferStride;
 
-    void*                               pColorBuffer[MaxColorBuffer];
+    void*                                       pColorBuffer[MaxColorBuffer];
 
-    dynamic_buffer_t                    triangles;
-    dynamic_buffer_t                    culledTriangles;
-    dynamic_buffer_t                    screenSpaceTriangles;
+    dynamic_buffer_t<triangle4f_t>              triangles;
+    dynamic_buffer_t<triangle4f_t>              visibleTriangles;
+    dynamic_buffer_t<triangle4f_t>              clippedTriangles;
+    dynamic_buffer_t<triangle2i_t>              screenSpaceTriangles;
 
-    matrix4x4f_t                        projectionMatrix;
-    matrix4x4f_t                        viewMatrix;
+    matrix4x4f_t                                projectionMatrix;
+    matrix4x4f_t                                viewMatrix;
 };
 
 //https://jsantell.com/3d-projection/
@@ -166,7 +210,6 @@ void _k15_create_orthographic_matrix(matrix4x4f_t* pOutMatrix, uint32_t width, u
 {
     memset(pOutMatrix, 0, sizeof(matrix4x4f_t));
 
-
     pOutMatrix->m00 = 1.0f / (float)width;
     pOutMatrix->m11 = 1.0f / (float)height;
     pOutMatrix->m22 = -2.0f / (far-near);
@@ -179,7 +222,7 @@ void _k15_set_identity_matrix4x4f(matrix4x4f_t* pMatrix)
     memcpy(pMatrix, IdentityMatrix4x4, sizeof(IdentityMatrix4x4));
 }
 
-bool _k15_matrix4x4f_is_equal(const matrix4x4f_t* pA, const matrix4x4f_t* pB)
+bool _k15_matrix4x4f_is_equal(const matrix4x4f_t* restrict_modifier pA, const matrix4x4f_t* restrict_modifier pB)
 {
     return memcmp(pA, pB, sizeof(matrix4x4f_t)) == 0;
 }
@@ -235,7 +278,7 @@ vector4f_t _k15_mul_vector4_matrix44(const vector4f_t* pVector, const matrix4x4f
 }
 
 //http://www.edepot.com/linee.html
-void _k15_draw_line(const software_rasterizer_context_t* pContext, const vector2i_t* pVectorA, const vector2i_t* pVectorB, uint32_t color)
+void _k15_draw_line(void* pColorBuffer, uint32_t colorBufferStride, const vector2i_t* pVectorA, const vector2i_t* pVectorB, uint32_t color)
 {
     int x = pVectorA->x;
     int y = pVectorA->y;
@@ -246,7 +289,7 @@ void _k15_draw_line(const software_rasterizer_context_t* pContext, const vector2
     int shortLen=y2-y;
     int longLen=x2-x;
 
-    uint32_t* pBackBuffer = (uint32_t*)pContext->pColorBuffer[ pContext->currentColorBufferIndex ];
+    uint32_t* pBackBuffer = (uint32_t*)pColorBuffer;
 
     if (abs(shortLen)>abs(longLen)) {
         int swap=shortLen;
@@ -264,7 +307,7 @@ void _k15_draw_line(const software_rasterizer_context_t* pContext, const vector2
             for (int j=0x8000+(x<<16);y<=longLen;++y) {
                 const uint32_t localX = j >> 16;
                 const uint32_t localY = y;
-                pBackBuffer[localX + localY * pContext->backBufferStride] = color;
+                pBackBuffer[localX + localY * colorBufferStride] = color;
                 j+=decInc;
             }
             return;
@@ -273,7 +316,7 @@ void _k15_draw_line(const software_rasterizer_context_t* pContext, const vector2
         for (int j=0x8000+(x<<16);y>=longLen;--y) {
             const uint32_t localX = j >> 16;
             const uint32_t localY = y;
-            pBackBuffer[localX + localY * pContext->backBufferStride] = color;
+            pBackBuffer[localX + localY * colorBufferStride] = color;
             j-=decInc;
         }
         return;	
@@ -284,7 +327,7 @@ void _k15_draw_line(const software_rasterizer_context_t* pContext, const vector2
         for (int j=0x8000+(y<<16);x<=longLen;++x) {
             const uint32_t localX = x;
             const uint32_t localY = j >> 16;
-            pBackBuffer[localX + localY * pContext->backBufferStride] = color;
+            pBackBuffer[localX + localY * colorBufferStride] = color;
             j+=decInc;
         }
         return;
@@ -293,35 +336,20 @@ void _k15_draw_line(const software_rasterizer_context_t* pContext, const vector2
     for (int j=0x8000+(y<<16);x>=longLen;--x) {
         const uint32_t localX = x;
         const uint32_t localY = j >> 16;
-        pBackBuffer[localX + localY * pContext->backBufferStride] = color;
+        pBackBuffer[localX + localY * colorBufferStride] = color;
         j-=decInc;
     }
 }
 
-void k15_draw_triangles(const software_rasterizer_context_t* pContext)
+void k15_draw_triangles(void* pColorBuffer, uint32_t colorBufferStride, const dynamic_buffer_t<triangle2i_t>* pScreenSpaceTriangleBuffer)
 {
-    for(uint32_t triangleIndex = 0; triangleIndex < pContext->screenSpaceTriangles.count; ++triangleIndex)
+    for(uint32_t triangleIndex = 0; triangleIndex < pScreenSpaceTriangleBuffer->count; ++triangleIndex)
     {
-        const triangle2i_t* pTriangle = (const triangle2i_t*)pContext->screenSpaceTriangles.pData + triangleIndex;
-        _k15_draw_line(pContext, &pTriangle->points[0], &pTriangle->points[1], 0xFFFFFFFF);
-        _k15_draw_line(pContext, &pTriangle->points[1], &pTriangle->points[2], 0xFFFFFFFF);
-        _k15_draw_line(pContext, &pTriangle->points[2], &pTriangle->points[0], 0xFFFFFFFF);
+        const triangle2i_t* pTriangle = pScreenSpaceTriangleBuffer->pData + triangleIndex;
+        _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->points[0], &pTriangle->points[1], 0xFFFFFFFF);
+        _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->points[1], &pTriangle->points[2], 0xFFFFFFFF);
+        _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->points[2], &pTriangle->points[0], 0xFFFFFFFF);
     }
-}
-
-bool _k15_create_dynamic_buffer(dynamic_buffer_t* pOutBuffer, uint32_t initialCapacity, uint32_t elementSizeInBytes)
-{
-    pOutBuffer->pData = malloc(initialCapacity * elementSizeInBytes);
-    if(pOutBuffer->pData == nullptr)
-    {
-        return false;
-    }
-
-    pOutBuffer->elementSizeInBytes = elementSizeInBytes;
-    pOutBuffer->capacity = initialCapacity;
-    pOutBuffer->count = 0;
-
-    return true;
 }
 
 //https://graphics.stanford.edu/~seander/bithacks.html#DetermineIfPowerOf2
@@ -344,7 +372,23 @@ inline uint32_t _k15_get_next_pow2(uint32_t value)
     return value;
 }
 
-bool _k15_grow_dynamic_buffer(dynamic_buffer_t* pBuffer, uint32_t newCapacity)
+template<typename T>
+bool _k15_create_dynamic_buffer(dynamic_buffer_t<T>* pOutBuffer, uint32_t initialCapacity)
+{
+    pOutBuffer->pData = (T*)malloc(initialCapacity * sizeof(T));
+    if(pOutBuffer->pData == nullptr)
+    {
+        return false;
+    }
+
+    pOutBuffer->capacity = initialCapacity;
+    pOutBuffer->count = 0;
+
+    return true;
+}
+
+template<typename T>
+bool _k15_grow_dynamic_buffer(dynamic_buffer_t<T>* pBuffer, uint32_t newCapacity)
 {
     if(pBuffer->capacity > newCapacity)
     {
@@ -352,23 +396,23 @@ bool _k15_grow_dynamic_buffer(dynamic_buffer_t* pBuffer, uint32_t newCapacity)
     }
     
     const uint32_t newPow2Size = _k15_is_pow2(newCapacity) ? newCapacity : _k15_get_next_pow2(newCapacity);
-    const uint32_t newTriangleBufferCapacity = pBuffer->capacity * 2;
-    void* pNewTriangleBuffer = malloc(newTriangleBufferCapacity * pBuffer->elementSizeInBytes);
+    T* pNewTriangleBuffer = (T*)malloc(newPow2Size * sizeof(T));
     if(pNewTriangleBuffer == nullptr)
     {
         return false;
     }
 
-    memcpy(pNewTriangleBuffer, pBuffer->pData, pBuffer->capacity * pBuffer->elementSizeInBytes);
+    memcpy(pNewTriangleBuffer, pBuffer->pData, pBuffer->capacity * sizeof(T));
 
     free(pBuffer->pData);
     pBuffer->pData = pNewTriangleBuffer;
-    pBuffer->capacity = newTriangleBufferCapacity;
+    pBuffer->capacity = newPow2Size;
 
     return true;
 }
 
-void* _k15_dynamic_buffer_push_back(dynamic_buffer_t* pBuffer, uint32_t elementCount)
+template<typename T>
+T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
 {
     const uint32_t newTriangleCount = pBuffer->count + elementCount;
     if(newTriangleCount >= pBuffer->capacity)
@@ -381,12 +425,43 @@ void* _k15_dynamic_buffer_push_back(dynamic_buffer_t* pBuffer, uint32_t elementC
 
     uint32_t oldCount = pBuffer->count;
     pBuffer->count += elementCount;
-    return (uint8_t*)pBuffer->pData + (oldCount * pBuffer->elementSizeInBytes);
+    return pBuffer->pData + oldCount;
+}
+
+template<typename T>
+T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer)
+{
+    const uint32_t bufferCapacity = pStaticBuffer->capacity;
+    if((pStaticBuffer->count + 1) == bufferCapacity)
+    {
+        return nullptr;
+    }
+
+    return &pStaticBuffer->pStaticData[pStaticBuffer->count++];
+}
+
+template<typename T>
+bool _k15_push_static_buffer_to_dynamic_buffer(base_static_buffer_t<T>* pStaticBuffer, dynamic_buffer_t<T>* pDynamicBuffer)
+{
+    T* pDataFromDynamicBuffer = _k15_dynamic_buffer_push_back<T>(pDynamicBuffer, pStaticBuffer->count);
+    if(pDataFromDynamicBuffer == nullptr)
+    {
+        return false;
+    }
+
+    memcpy(pDataFromDynamicBuffer, pStaticBuffer->pStaticData, sizeof(T) * pStaticBuffer->count);
+    return true;
 }
 
 vector4f_t k15_create_vector4f(float x, float y, float z, float w)
 {
     return {x, y, z, w};
+}
+
+software_rasterizer_context_statistics_t  k15_get_software_rasterizer_statistics(const software_rasterizer_context_t* pContext)
+{
+    RuntimeAssert(pContext != nullptr);
+    return pContext->statistics;
 }
 
 bool k15_create_software_rasterizer_context(software_rasterizer_context_t** pOutContextPtr, const software_rasterizer_context_init_parameters_t* pParameters)
@@ -399,7 +474,9 @@ bool k15_create_software_rasterizer_context(software_rasterizer_context_t** pOut
     pContext->currentTopology = topology_t::none;
     pContext->currentTriangleVertexIndex = 0;
 
-    pContext->settings.backFaceCullingEnabled = 1;
+    memset(&pContext->statistics, 0, sizeof(pContext->statistics));
+
+    pContext->settings.backFaceCullingEnabled = 0;
     for(uint8_t colorBufferIndex = 0; colorBufferIndex < pParameters->colorBufferCount; ++colorBufferIndex)
     {
         pContext->pColorBuffer[colorBufferIndex] = pParameters->pColorBuffers[colorBufferIndex];
@@ -407,23 +484,27 @@ bool k15_create_software_rasterizer_context(software_rasterizer_context_t** pOut
 
     pContext->colorBufferCount = pParameters->colorBufferCount;
 
-    if(!_k15_create_dynamic_buffer(&pContext->triangles, DefaultTriangleBufferCapacity, sizeof(triangle4f_t)))
+    if(!_k15_create_dynamic_buffer<triangle4f_t>(&pContext->triangles, DefaultTriangleBufferCapacity))
     {
         return false;
     }
 
-    if(!_k15_create_dynamic_buffer(&pContext->culledTriangles, DefaultTriangleBufferCapacity, sizeof(triangle4f_t)))
+    if(!_k15_create_dynamic_buffer<triangle4f_t>(&pContext->visibleTriangles, DefaultTriangleBufferCapacity))
     {
         return false;
     }
 
-    if(!_k15_create_dynamic_buffer(&pContext->screenSpaceTriangles, DefaultTriangleBufferCapacity, sizeof(triangle2i_t)))
+    if(!_k15_create_dynamic_buffer<triangle4f_t>(&pContext->clippedTriangles, DefaultTriangleBufferCapacity))
+    {
+        return false;
+    }
+
+    if(!_k15_create_dynamic_buffer<triangle2i_t>(&pContext->screenSpaceTriangles, DefaultTriangleBufferCapacity))
     {
         return false;
     }
 
     _k15_create_projection_matrix(&pContext->projectionMatrix, pParameters->backBufferWidth, pParameters->backBufferHeight, 1.0f, 10.f, 90.0f);
-    //_k15_create_orthographic_matrix(&pContext->projectionMatrix, pParameters->backBufferWidth, pParameters->backBufferHeight,  1.0f, 10.f);
     _k15_set_identity_matrix4x4f(&pContext->viewMatrix);
 
     *pOutContextPtr = pContext;
@@ -441,7 +522,7 @@ void k15_swap_color_buffers(software_rasterizer_context_t* pContext)
     pContext->currentColorBufferIndex = newColorBufferIndex;
 }
 
-matrix4x4f_t _k15_mul_matrix4x4f(const matrix4x4f_t* pMatA, const matrix4x4f_t* pMatB)
+matrix4x4f_t _k15_mul_matrix4x4f(const matrix4x4f_t* restrict_modifier pMatA, const matrix4x4f_t* restrict_modifier pMatB)
 {
     matrix4x4f_t mat = {};
     mat.m00 = pMatA->m00 * pMatB->m00 + pMatA->m01 * pMatB->m10 + pMatA->m02 * pMatB->m20 + pMatA->m03 * pMatB->m30;
@@ -467,31 +548,16 @@ matrix4x4f_t _k15_mul_matrix4x4f(const matrix4x4f_t* pMatA, const matrix4x4f_t* 
     return mat;
 }
 
-void k15_transform_triangles(software_rasterizer_context_t* pContext)
+void k15_transform_triangles(const matrix4x4f_t* restrict_modifier pProjectionMatrix, const matrix4x4f_t* restrict_modifier pViewMatrix, dynamic_buffer_t<triangle4f_t>* pTriangles)
 {
-    matrix4x4f_t viewProjMat = _k15_mul_matrix4x4f(&pContext->projectionMatrix, &pContext->viewMatrix);
+    matrix4x4f_t viewProjMat = _k15_mul_matrix4x4f(pProjectionMatrix, pViewMatrix);
     
-    for(uint32_t triangleIndex = 0; triangleIndex < pContext->triangles.count; ++triangleIndex)
+    for(uint32_t triangleIndex = 0; triangleIndex < pTriangles->count; ++triangleIndex)
     {
-        triangle4f_t* pTriangle = (triangle4f_t*)pContext->triangles.pData + triangleIndex;
+        triangle4f_t* pTriangle = pTriangles->pData + triangleIndex;
         pTriangle->points[0] = _k15_mul_vector4_matrix44(&pTriangle->points[0], &viewProjMat);
         pTriangle->points[1] = _k15_mul_vector4_matrix44(&pTriangle->points[1], &viewProjMat);
         pTriangle->points[2] = _k15_mul_vector4_matrix44(&pTriangle->points[2], &viewProjMat);
-
-        pTriangle->points[0].x /= pTriangle->points[0].w;
-        pTriangle->points[0].y /= pTriangle->points[0].w;
-        pTriangle->points[0].z /= pTriangle->points[0].w;
-        pTriangle->points[0].w /= pTriangle->points[0].w;
-
-        pTriangle->points[1].x /= pTriangle->points[1].w;
-        pTriangle->points[1].y /= pTriangle->points[1].w;
-        pTriangle->points[1].z /= pTriangle->points[1].w;
-        pTriangle->points[1].w /= pTriangle->points[1].w;
-
-        pTriangle->points[2].x /= pTriangle->points[2].w;
-        pTriangle->points[2].y /= pTriangle->points[2].w;
-        pTriangle->points[2].z /= pTriangle->points[2].w;
-        pTriangle->points[2].w /= pTriangle->points[2].w;
     }
 }
 
@@ -531,7 +597,7 @@ vector4f_t _k15_vector4f_sub(vector4f_t a, vector4f_t b)
 
 bool k15_cull_backfacing_triangles(software_rasterizer_context_t* pContext)
 {
-    dynamic_buffer_t* pCulledTriangles = &pContext->culledTriangles;
+    dynamic_buffer_t<triangle4f_t>* pvisibleTriangles = &pContext->visibleTriangles;
     for(uint32_t triangleIndex = 0; triangleIndex < pContext->triangles.count; ++triangleIndex)
     {
         triangle4f_t* pTriangle = (triangle4f_t*)pContext->triangles.pData + triangleIndex;
@@ -541,7 +607,7 @@ bool k15_cull_backfacing_triangles(software_rasterizer_context_t* pContext)
 
         if(sign.z > 0.0f)
         {
-            triangle4f_t* pNonCulledTriangle = (triangle4f_t*)_k15_dynamic_buffer_push_back(pCulledTriangles, 1u);
+            triangle4f_t* pNonCulledTriangle = _k15_dynamic_buffer_push_back(pvisibleTriangles, 1u);
             if(pNonCulledTriangle == nullptr)
             {
                 return false;
@@ -553,63 +619,160 @@ bool k15_cull_backfacing_triangles(software_rasterizer_context_t* pContext)
     return true;
 }
 
-void k15_cull_triangles(software_rasterizer_context_t* pContext)
+inline bool _k15_is_position_outside_frustum(const vector4f_t* pPosition)
 {
-
+    const float posW = pPosition->w;
+    const float negW = -pPosition->w;
+    return pPosition->z < negW || pPosition->z > posW || 
+        pPosition->y < negW || pPosition->y > posW || 
+        pPosition->x < negW || pPosition->x > posW;
 }
 
-void k15_project_triangles_into_screenspace(software_rasterizer_context_t* pContext)
+template<bool APPLY_BACKFACE_CULLING>
+void k15_cull_outside_frustum_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pTriangleBuffer, dynamic_buffer_t<triangle4f_t>* restrict_modifier pCulledTriangleBuffer)
 {
-    const float width   = (float)pContext->backBufferWidth-1u;
-    const float height  = (float)pContext->backBufferHeight-1u;
+    static_buffer_t<triangle4f_t, 256> visibleTriangles;
 
-    const float halfWidth = 0.0f;//width / 2.0f;
-    const float halfHeight = 0.0f;//height / 2.0f;
-
-    triangle2i_t* pScreenspaceTriangles = (triangle2i_t*)_k15_dynamic_buffer_push_back(&pContext->screenSpaceTriangles, pContext->culledTriangles.count);
-
-    for(uint32_t triangleIndex = 0; triangleIndex < pContext->culledTriangles.count; ++triangleIndex)
+    triangle4f_t* pTriangles = pTriangleBuffer->pData;
+    uint32_t numTrianglesCompletelyOutsideFrustum = 0;
+    for(uint32_t triangleIndex = 0; triangleIndex < pTriangleBuffer->count; ++triangleIndex)
     {
-        const triangle4f_t* pTriangle = (triangle4f_t*)pContext->culledTriangles.pData + triangleIndex;
+        const triangle4f_t* pTriangle = pTriangles + triangleIndex;
+        const bool triangleOutsideFrustum = _k15_is_position_outside_frustum(&pTriangle->points[0]) && _k15_is_position_outside_frustum(&pTriangle->points[1]) && _k15_is_position_outside_frustum(&pTriangle->points[2]);
+
+        if(!triangleOutsideFrustum)
+        {
+            if(APPLY_BACKFACE_CULLING)
+            {
+                const vector4f_t ab = _k15_vector4f_sub(pTriangle->points[1], pTriangle->points[0]);
+                const vector4f_t ac = _k15_vector4f_sub(pTriangle->points[2], pTriangle->points[0]);
+                const vector4f_t sign = _k15_vector4f_cross(ab, ac);
+
+                const bool isTriangleBackfacing = sign.z < 0.0f;
+                if(isTriangleBackfacing)
+                {
+                    continue;
+                }
+            }
+
+            triangle4f_t* pVisibleTriangle = _k15_static_buffer_push_back(&visibleTriangles);
+            if(pVisibleTriangle == nullptr)
+            {
+                if(!_k15_push_static_buffer_to_dynamic_buffer(&visibleTriangles, pCulledTriangleBuffer))
+                {
+                    //FK: Out of memory
+                }
+
+                visibleTriangles.count = 0;
+                pVisibleTriangle = _k15_static_buffer_push_back(&visibleTriangles);
+            }
+
+            memcpy(pVisibleTriangle, pTriangle, sizeof(triangle4f_t));
+        }
+    }
+
+    if(visibleTriangles.count > 0)
+    {
+        if(!_k15_push_static_buffer_to_dynamic_buffer(&visibleTriangles, pCulledTriangleBuffer))
+        {
+            //FK: Out of memory
+        }
+    }
+}
+
+void k15_cull_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pTriangleBuffer, dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisibleTriangleBuffer, bool backFaceCullingEnabeld)
+{
+    if(backFaceCullingEnabeld)
+    {
+        k15_cull_outside_frustum_triangles<true>(pTriangleBuffer, pVisibleTriangleBuffer);
+    }
+    else
+    {
+        k15_cull_outside_frustum_triangles<false>(pTriangleBuffer, pVisibleTriangleBuffer);
+    }
+}
+
+void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisibleTriangleBuffer, dynamic_buffer_t<triangle4f_t>* restrict_modifier pClippedTriangleBuffer)
+{
+    constexpr float clipNegX = -0.9f;
+    constexpr float clipPosX = 0.9f;
+
+    static_buffer_t<triangle4f_t, 256> localClippedTriangles;
+    const triangle4f_t* pVisibleTriangles = (triangle4f_t*)pVisibleTriangleBuffer->pData;
+    for(uint32_t triangleIndex = 0; triangleIndex < pVisibleTriangleBuffer->count; ++triangleIndex)
+    {
+        const triangle4f_t* pTriangle = pVisibleTriangles + triangleIndex;
+        triangle4f_t* pClippedTriangle = _k15_dynamic_buffer_push_back(pClippedTriangleBuffer, 1u);
+        memcpy(pClippedTriangle, pTriangle, sizeof(triangle4f_t));
+        
+        //FK: only apply x clipping for now (testing)
+        const float clipNegX = -pClippedTriangle->points[0].w * 0.9f;
+        if(pClippedTriangle->points[0].x < clipNegX)
+        {
+            const float dx1 = pClippedTriangle->points[0].x - pClippedTriangle->points[1].x;
+            const float dx2 = pClippedTriangle->points[2].x - pClippedTriangle->points[0].x;
+
+            const float t = (fabsf(pClippedTriangle->points[0].x) + clipNegX) / dx1;
+            const float clipX = pClippedTriangle->points[0].x + t * dx1;
+
+            pClippedTriangle->points[0].x = clipX;
+        }
+    }
+}
+
+void k15_project_triangles_into_screenspace(dynamic_buffer_t<triangle4f_t>* restrict_modifier pClippedTriangleBuffer, dynamic_buffer_t<triangle2i_t>* restrict_modifier pScreenspaceTriangleBuffer, uint32_t backBufferWidth, uint32_t backBufferHeight)
+{
+    const float width   = (float)backBufferWidth-1u;
+    const float height  = (float)backBufferHeight-1u;
+
+    triangle2i_t* pScreenspaceTriangles = _k15_dynamic_buffer_push_back(pScreenspaceTriangleBuffer, pClippedTriangleBuffer->count);
+
+    for(uint32_t triangleIndex = 0; triangleIndex < pClippedTriangleBuffer->count; ++triangleIndex)
+    {
+        const triangle4f_t* pTriangle = pClippedTriangleBuffer->pData + triangleIndex;
         triangle2i_t* pScreenspaceTriangle = pScreenspaceTriangles + triangleIndex;
         RuntimeAssert(pScreenspaceTriangle != nullptr);        
 
-        pScreenspaceTriangle->points[0].x = (int)(((1.0f + pTriangle->points[0].x) / 2.0f) * width);
-        pScreenspaceTriangle->points[0].y = (int)(((1.0f + pTriangle->points[0].y) / 2.0f) * height);
+        pScreenspaceTriangle->points[0].x = (int)(((1.0f + pTriangle->points[0].x / pTriangle->points[0].w) / 2.0f) * width);
+        pScreenspaceTriangle->points[0].y = (int)(((1.0f + pTriangle->points[0].y / pTriangle->points[0].w) / 2.0f) * height);
 
-        pScreenspaceTriangle->points[1].x = (int)(((1.0f + pTriangle->points[1].x) / 2.0f) * width);
-        pScreenspaceTriangle->points[1].y = (int)(((1.0f + pTriangle->points[1].y) / 2.0f) * height);
+        pScreenspaceTriangle->points[1].x = (int)(((1.0f + pTriangle->points[1].x / pTriangle->points[0].w) / 2.0f) * width);
+        pScreenspaceTriangle->points[1].y = (int)(((1.0f + pTriangle->points[1].y / pTriangle->points[0].w) / 2.0f) * height);
 
-        pScreenspaceTriangle->points[2].x = (int)(((1.0f + pTriangle->points[2].x) / 2.0f) * width);
-        pScreenspaceTriangle->points[2].y = (int)(((1.0f + pTriangle->points[2].y) / 2.0f) * height);
+        pScreenspaceTriangle->points[2].x = (int)(((1.0f + pTriangle->points[2].x / pTriangle->points[0].w) / 2.0f) * width);
+        pScreenspaceTriangle->points[2].y = (int)(((1.0f + pTriangle->points[2].y / pTriangle->points[0].w) / 2.0f) * height);
     }
+}
+
+void k15_update_statistics(software_rasterizer_context_t* pContext)
+{
+#ifndef K15_SOFTWARE_RASTERIZER_TRACK_STATISTICS
+    UnusedVariable(pContext);
+    return;
+#endif
+
+    pContext->statistics.trianglesDrawn = pContext->screenSpaceTriangles.count;
+    pContext->statistics.trianglesCulled = pContext->triangles.count - pContext->visibleTriangles.count;
+    pContext->statistics.trianglesAfterClipping = pContext->clippedTriangles.count;
 }
 
 void k15_draw_frame(software_rasterizer_context_t* pContext)
 {
-    bool outOfMemory = false;
-    k15_transform_triangles(pContext);
-    if(pContext->settings.backFaceCullingEnabled)
-    {
-        outOfMemory = !k15_cull_backfacing_triangles(pContext);
-    }
-    else
-    {
-        triangle4f_t* pCulledTriangles = (triangle4f_t*)_k15_dynamic_buffer_push_back(&pContext->culledTriangles, pContext->triangles.count);
-        RuntimeAssert(pCulledTriangles != nullptr);
+    k15_transform_triangles(&pContext->projectionMatrix, &pContext->viewMatrix, &pContext->triangles);
+    k15_cull_triangles(&pContext->triangles, &pContext->visibleTriangles, pContext->settings.backFaceCullingEnabled);
+    k15_clip_triangles(&pContext->visibleTriangles, &pContext->clippedTriangles);
+    k15_project_triangles_into_screenspace(&pContext->clippedTriangles, &pContext->screenSpaceTriangles, pContext->backBufferWidth, pContext->backBufferHeight);
+    k15_draw_triangles(pContext->pColorBuffer[pContext->currentColorBufferIndex], pContext->backBufferStride, &pContext->screenSpaceTriangles);
 
-        memcpy(pCulledTriangles, pContext->triangles.pData, pContext->triangles.count * sizeof(triangle4f_t));
-    }
+    k15_update_statistics(pContext);
 
-    k15_cull_triangles(pContext);
-    k15_project_triangles_into_screenspace(pContext);
-    k15_draw_triangles(pContext);
     pContext->triangles.count = 0;
-    pContext->culledTriangles.count = 0;
+    pContext->visibleTriangles.count = 0;
+    pContext->clippedTriangles.count = 0;
     pContext->screenSpaceTriangles.count = 0;
 }
 
-void k15_change_color_buffers(software_rasterizer_context_t* pContext, void** pColorBuffers, uint8_t colorBufferCount, uint32_t widthInPixels, uint32_t heightInPixels, uint32_t strideInBytes)
+void k15_change_color_buffers(software_rasterizer_context_t* pContext, void** restrict_modifier pColorBuffers, uint8_t colorBufferCount, uint32_t widthInPixels, uint32_t heightInPixels, uint32_t strideInBytes)
 {
     for(uint8_t colorBufferIndex = 0; colorBufferIndex < colorBufferCount; ++colorBufferIndex)
     {
@@ -649,11 +812,11 @@ void k15_vertex_position(software_rasterizer_context_t* pContext, float x, float
     RuntimeAssert(pContext != nullptr);
     RuntimeAssertMsg(pContext->currentTopology != topology_t::none, "Didn't call k15_being_geometry before.");
 
-    triangle4f_t* pCurrentTriangle = (triangle4f_t*)pContext->triangles.pData + (pContext->triangles.count - 1u);
+    triangle4f_t* pCurrentTriangle = pContext->triangles.pData + (pContext->triangles.count - 1u);
 
     if(pContext->currentTriangleVertexIndex == 0u || pContext->currentTriangleVertexIndex == 3u)
     {
-        pCurrentTriangle = (triangle4f_t*)_k15_dynamic_buffer_push_back(&pContext->triangles, 1u);
+        pCurrentTriangle = _k15_dynamic_buffer_push_back(&pContext->triangles, 1u);
         RuntimeAssert(pCurrentTriangle != nullptr);
 
         pContext->currentTriangleVertexIndex = 0;
