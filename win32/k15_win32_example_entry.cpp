@@ -5,6 +5,7 @@
 #include "../k15_software_rasterizer.hpp"
 
 #define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdio.h>
 
@@ -352,6 +353,7 @@ void drawBackBuffer(HWND hwnd)
 	SetTextColor(deviceContext, RGB(255, 255, 255));
 	SetBkColor(deviceContext, TRANSPARENT);
 	DrawText(deviceContext, statisticsTextBuffer, textBufferLength, &bla, DT_LEFT | DT_TOP);
+	
 	memset(pBackBufferPixels, 0u, virtualScreenWidth * virtualScreenHeight * sizeof(uint32_t));
 }
 

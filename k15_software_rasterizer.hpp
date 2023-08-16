@@ -429,15 +429,43 @@ T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementC
 }
 
 template<typename T>
-T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer)
+T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, T value)
 {
-    const uint32_t bufferCapacity = pStaticBuffer->capacity;
-    if((pStaticBuffer->count + 1) == bufferCapacity)
+    T* pValue = _k15_dynamic_buffer_push_back(pBuffer, 1u);
+    if(pValue == nullptr)
     {
         return nullptr;
     }
 
-    return &pStaticBuffer->pStaticData[pStaticBuffer->count++];
+    memcpy(pValue, &value, sizeof(T));
+    return pValue;
+}
+
+template<typename T>
+T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer, uint32_t elementCount)
+{
+    const uint32_t bufferCapacity = pStaticBuffer->capacity;
+    if((pStaticBuffer->count + elementCount) == bufferCapacity)
+    {
+        return nullptr;
+    }
+
+    const uint32_t oldCount = pStaticBuffer->count;
+    pStaticBuffer->count += elementCount;
+    return pStaticBuffer->pStaticData + oldCount;
+}
+
+template<typename T>
+T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer, T value)
+{
+    T* pValue = _k15_static_buffer_push_back(pStaticBuffer, 1u);
+    if(pValue == nullptr)
+    {
+        return nullptr;
+    }
+
+    memcpy(pValue, &value, sizeof(T));
+    return pValue;
 }
 
 template<typename T>
@@ -655,7 +683,7 @@ void k15_cull_outside_frustum_triangles(dynamic_buffer_t<triangle4f_t>* restrict
                 }
             }
 
-            triangle4f_t* pVisibleTriangle = _k15_static_buffer_push_back(&visibleTriangles);
+            triangle4f_t* pVisibleTriangle = _k15_static_buffer_push_back(&visibleTriangles, 1u);
             if(pVisibleTriangle == nullptr)
             {
                 if(!_k15_push_static_buffer_to_dynamic_buffer(&visibleTriangles, pCulledTriangleBuffer))
@@ -664,7 +692,7 @@ void k15_cull_outside_frustum_triangles(dynamic_buffer_t<triangle4f_t>* restrict
                 }
 
                 visibleTriangles.count = 0;
-                pVisibleTriangle = _k15_static_buffer_push_back(&visibleTriangles);
+                pVisibleTriangle = _k15_static_buffer_push_back(&visibleTriangles, 1u);
             }
 
             memcpy(pVisibleTriangle, pTriangle, sizeof(triangle4f_t));
@@ -692,31 +720,103 @@ void k15_cull_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pTrian
     }
 }
 
+void _k15_clip_vertices(base_static_buffer_t<vector4f_t>* pVertexBuffer)
+{
+    vector4f_t startPosition = pVertexBuffer->pStaticData[0];
+    for(uint32_t vertexIndex = 1; vertexIndex < pVertexBuffer->count; ++vertexIndex)
+    {
+        vector4f_t endPosition = pVertexBuffer->pStaticData[vertexIndex];
+
+        if(_k15_is_position_outside_frustum(&startPosition) || _k15_is_position_outside_frustum(&endPosition))
+        {
+            vector4f_t delta = _k15_vector4f_sub(endPosition, startPosition);
+        }
+        else
+        {
+        }
+    }
+}
+
+inline float _k15_signf(float value)
+{
+    return value > 0.0f ? 1.0f : -1.0f;
+}
+
 void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisibleTriangleBuffer, dynamic_buffer_t<triangle4f_t>* restrict_modifier pClippedTriangleBuffer)
 {
-    constexpr float clipNegX = -0.9f;
-    constexpr float clipPosX = 0.9f;
-
-    static_buffer_t<triangle4f_t, 256> localClippedTriangles;
+    static_buffer_t<vector4f_t, 256> localClippedVertices;
     const triangle4f_t* pVisibleTriangles = (triangle4f_t*)pVisibleTriangleBuffer->pData;
-    for(uint32_t triangleIndex = 0; triangleIndex < pVisibleTriangleBuffer->count; ++triangleIndex)
+    for(uint32_t triangleIndex = 0, localTriangleIndex = 0; triangleIndex < pVisibleTriangleBuffer->count; ++triangleIndex, ++localTriangleIndex)
     {
         const triangle4f_t* pTriangle = pVisibleTriangles + triangleIndex;
-        triangle4f_t* pClippedTriangle = _k15_dynamic_buffer_push_back(pClippedTriangleBuffer, 1u);
-        memcpy(pClippedTriangle, pTriangle, sizeof(triangle4f_t));
-        
-        //FK: only apply x clipping for now (testing)
-        const float clipNegX = -pClippedTriangle->points[0].w * 0.9f;
-        if(pClippedTriangle->points[0].x < clipNegX)
+        vector4f_t startPosition    = pTriangle->points[0];
+        vector4f_t endPosition      = pTriangle->points[1];
+        for(uint32_t vertexIndex = 1; vertexIndex < 3u; ++vertexIndex)
         {
-            const float dx1 = pClippedTriangle->points[0].x - pClippedTriangle->points[1].x;
-            const float dx2 = pClippedTriangle->points[2].x - pClippedTriangle->points[0].x;
+            const bool startIsOutside       = _k15_is_position_outside_frustum(&startPosition);
+            const bool endIsOutside         = _k15_is_position_outside_frustum(&endPosition);
 
-            const float t = (fabsf(pClippedTriangle->points[0].x) + clipNegX) / dx1;
-            const float clipX = pClippedTriangle->points[0].x + t * dx1;
+            if(startIsOutside || endIsOutside)
+            {
+                const vector4f_t delta = _k15_vector4f_sub(endPosition, startPosition);
+                if(startIsOutside)
+                {
+                    vector4f_t* pClipVertex = _k15_static_buffer_push_back(&localClippedVertices, startPosition);
+                    if(fabsf(startPosition.x) > startPosition.w)
+                    {
+                        const float sign = _k15_signf(startPosition.x);
+                        const float absW = fabsf(startPosition.w);
+                        const float t = fabsf((startPosition.x - (sign * absW)) / delta.x);
+                        pClipVertex->x = startPosition.x + t * delta.x;
+                    }
+                }
 
-            pClippedTriangle->points[0].x = clipX;
+                if(endIsOutside)
+                {
+                    vector4f_t* pClipVertex = _k15_static_buffer_push_back(&localClippedVertices, endPosition);
+                    if(fabsf(endPosition.x) > endPosition.w)
+                    {
+                        const float sign = _k15_signf(endPosition.x);
+                        const float absW = fabsf(endPosition.w);
+                        const float t = fabsf((endPosition.x - (sign * absW)) / delta.x);
+                        pClipVertex->x = endPosition.x - t * delta.x;
+                    }
+                }
+            }
+            else
+            {
+                _k15_static_buffer_push_back(&localClippedVertices, startPosition);
+            }
+
+            startPosition = endPosition;
+            endPosition = pTriangle->points[vertexIndex];
         }
+
+        if(!_k15_is_position_outside_frustum(&endPosition))
+        {
+            _k15_static_buffer_push_back(&localClippedVertices, endPosition);
+        }
+        else
+        {
+            const vector4f_t delta = _k15_vector4f_sub(endPosition, startPosition);
+            vector4f_t* pClipVertex = _k15_static_buffer_push_back(&localClippedVertices, endPosition);
+            if(fabsf(endPosition.x) > endPosition.w)
+            {
+                const float sign = _k15_signf(endPosition.x);
+                const float absW = fabsf(endPosition.w);
+                const float t = fabsf((endPosition.x - (sign * absW)) / delta.x);
+                pClipVertex->x = endPosition.x - t * delta.x;
+            }
+        }
+    }
+
+    RuntimeAssert((localClippedVertices.count % 3u) == 0u);
+    for(uint32_t clippedVertexIndex = 0; clippedVertexIndex < localClippedVertices.count; clippedVertexIndex += 3u)
+    {
+        triangle4f_t* pTriangle = _k15_dynamic_buffer_push_back(pClippedTriangleBuffer, 1u);
+        pTriangle->points[0] = localClippedVertices.pStaticData[clippedVertexIndex + 0];
+        pTriangle->points[1] = localClippedVertices.pStaticData[clippedVertexIndex + 1];
+        pTriangle->points[2] = localClippedVertices.pStaticData[clippedVertexIndex + 2];
     }
 }
 
