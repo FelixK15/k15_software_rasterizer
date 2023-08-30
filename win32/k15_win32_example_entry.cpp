@@ -88,9 +88,9 @@ constexpr vector3f_t test_cube_vertices[] = {
 };
 
 constexpr vector3f_t test_triangle_vertices[] = {
-	{ -0.5f, -0.25f, 2.0f},
-	{  0.0f,  0.5f, 2.0f},
-	{  0.5f, -0.5f, 2.0f}
+	{ -0.5f, -0.5f, 0.0f},
+	{  0.0f,  0.5f, 0.0f},
+	{  0.5f, -0.5f, 0.0f}
 };
 
 void createBackBuffer(HWND hwnd, int width, int height)
@@ -145,11 +145,11 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.z = 0.001f;
+			cameraVelocity.y = 0.001f;
 		}
 		else if(isKeyUp)
 		{
-			cameraVelocity.z = 0.0f;
+			cameraVelocity.y = 0.0f;
 		}
 	}
 
@@ -157,11 +157,11 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.z = -0.001f;
+			cameraVelocity.y = -0.001f;
 		}
 		else if(isKeyUp)
 		{
-			cameraVelocity.z = 0.0f;
+			cameraVelocity.y = 0.0f;
 		}
 	}
 	
@@ -186,6 +186,30 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 		else if(isKeyUp)
 		{
 			cameraVelocity.x = 0.0f;
+		}
+	}
+
+	if(wparam == VK_NEXT)
+	{
+		if(isKeyDown && firstKeyDown)
+		{
+			cameraVelocity.z = -0.001f;
+		}
+		else if(isKeyUp)
+		{
+			cameraVelocity.z = 0.0f;
+		}
+	}
+
+	if(wparam == VK_PRIOR)
+	{
+		if(isKeyDown && firstKeyDown)
+		{
+			cameraVelocity.z = 0.001f;
+		}
+		else if(isKeyUp)
+		{
+			cameraVelocity.z = 0.0f;
 		}
 	}
 }
@@ -343,17 +367,6 @@ void drawBackBuffer(HWND hwnd)
 	StretchDIBits(deviceContext, 0, 0, screenWidth, screenHeight, 0, 0, virtualScreenWidth, virtualScreenHeight, 
 		pBackBufferPixels, pBackBufferBitmapInfo, DIB_RGB_COLORS, SRCCOPY);  
 
-	software_rasterizer_context_statistics_t statistics = k15_get_software_rasterizer_statistics(pContext);
-	char statisticsTextBuffer[512] = {};
-	const int textBufferLength = sprintf(statisticsTextBuffer, "Triangles drawn: %u\nTriangles culled: %u\nTriangles after clipping: %u", statistics.trianglesDrawn, statistics.trianglesCulled, statistics.trianglesAfterClipping);
-
-	RECT bla = {};
-	GetClientRect(hwnd, &bla);
-
-	SetTextColor(deviceContext, RGB(255, 255, 255));
-	SetBkColor(deviceContext, TRANSPARENT);
-	DrawText(deviceContext, statisticsTextBuffer, textBufferLength, &bla, DT_LEFT | DT_TOP);
-	
 	memset(pBackBufferPixels, 0u, virtualScreenWidth * virtualScreenHeight * sizeof(uint32_t));
 }
 
@@ -369,9 +382,18 @@ void doFrame(uint32_t DeltaTimeInMS)
 
 #if 1
 	k15_begin_geometry(pContext, topology_t::triangle);
+	static float angle = 0.0f;
+	angle += 0.001f;
+	matrix4x4f_t rotation = {cosf(angle), 0.0f, sinf(angle), 0.0f,
+							 0.0f, 1.0f, 0.0f, 0.0f,
+							 -sinf(angle), 0.0f, cosf(angle), 0.0f,
+							 0.0f, 0.0f, 0.0f, 1.0f};
 	for(uint32_t i = 0; i < geometryVertexCount; ++i)
 	{
-		k15_vertex_position(pContext, pGeometry[i].x, pGeometry[i].y, pGeometry[i].z);
+		vector4f_t geometryVector = {pGeometry[i].x, pGeometry[i].y, pGeometry[i].z, 1.0f};
+		vector4f_t rotatedVector = _k15_mul_vector4_matrix44(&geometryVector, &rotation);
+		//k15_vertex_position(pContext, pGeometry[i].x, pGeometry[i].y, pGeometry[i].z);
+		k15_vertex_position(pContext, rotatedVector.x, rotatedVector.y, rotatedVector.z);
 	}
 
 	k15_end_geometry(pContext);
