@@ -61,15 +61,6 @@ struct software_rasterizer_context_init_parameters_t
     uint8_t     colorBufferCount;
 };
 
-struct software_rasterizer_context_statistics_t
-{
-    uint32_t trianglesDrawn;
-    uint32_t trianglesAfterClipping;
-    uint32_t trianglesCulled;
-};
-
-software_rasterizer_context_statistics_t  k15_get_software_rasterizer_statistics(const software_rasterizer_context_t* pContext);
-
 bool    k15_create_software_rasterizer_context(software_rasterizer_context_t** pOutContextPtr, const software_rasterizer_context_init_parameters_t* pParameters);
 
 void    k15_swap_color_buffers(software_rasterizer_context_t* pContext);
@@ -186,7 +177,6 @@ struct bitmap_font_t
 
 struct software_rasterizer_context_t
 {
-    software_rasterizer_context_statistics_t    statistics;
     software_rasterizer_settings_t              settings;
     bitmap_font_t                               font;
 
@@ -373,6 +363,8 @@ void k15_draw_triangles(void* pColorBuffer, uint32_t colorBufferStride, const dy
         _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->points[1], &pTriangle->points[2], 0xFFFFFFFF);
         _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->points[2], &pTriangle->points[0], 0xFFFFFFFF);
     }
+
+    printf("Triangles: %d\n", pScreenSpaceTriangleBuffer->count);
 }
 
 //https://graphics.stanford.edu/~seander/bithacks.html#DetermineIfPowerOf2
@@ -509,12 +501,6 @@ vector4f_t k15_create_vector4f(float x, float y, float z, float w)
     return {x, y, z, w};
 }
 
-software_rasterizer_context_statistics_t  k15_get_software_rasterizer_statistics(const software_rasterizer_context_t* pContext)
-{
-    RuntimeAssert(pContext != nullptr);
-    return pContext->statistics;
-}
-
 bool _k15_create_font(bitmap_font_t* pOutFont)
 {
     const size_t bitmapSizeInBytes = imageSizeX * imageSizeY * imageChannelCount;
@@ -539,8 +525,6 @@ bool k15_create_software_rasterizer_context(software_rasterizer_context_t** pOut
     {
         return false;
     }
-
-    memset(&pContext->statistics, 0, sizeof(pContext->statistics));
 
     pContext->settings.backFaceCullingEnabled = 0;
     for(uint8_t colorBufferIndex = 0; colorBufferIndex < pParameters->colorBufferCount; ++colorBufferIndex)
@@ -798,7 +782,6 @@ void _k15_calculate_intersection_with_clip_planes(vector4f_t* pOutIntersectionPo
 
         intersectionPoint.x = intersectionPoint.x + tx * delta.x;
         intersectionPoint.y = startPosition.y + delta.y * (negW - startPosition.x) / delta.x;
-        //y = y0 + (y1 - y0) * (xmin - x0) / (x1 - x0);
     }
 
     if(fabsf(intersectionPoint.y) > posW)
@@ -837,13 +820,15 @@ enum clip_flag_t : uint8_t
 
 void _k15_get_clipping_flags(const vector4f_t* ppPoints, uint8_t* ppClippingFlags)
 {
-    for( uint8_t pointIndex = 0; pointIndex < 3u; ++pointIndex )
+    for( uint8_t pointIndex = 0; pointIndex < 2u; ++pointIndex )
     {
         const vector4f_t* pPoint = ppPoints + pointIndex;
         uint8_t* pClippingFlags = ppClippingFlags + pointIndex;
 
-        const float posW = pPoint->w * 0.8f;
+        const float posW = pPoint->w;
         const float negW = -posW;
+
+        *pClippingFlags = 0u;
 
         if( pPoint->x < negW )
         {
@@ -863,7 +848,6 @@ void _k15_get_clipping_flags(const vector4f_t* ppPoints, uint8_t* ppClippingFlag
             *pClippingFlags |= (uint8_t)clip_flag_t::Bottom;
         }
 
-#if 1
         if( pPoint->z < negW )
         {
             *pClippingFlags |= (uint8_t)clip_flag_t::Far;
@@ -872,7 +856,6 @@ void _k15_get_clipping_flags(const vector4f_t* ppPoints, uint8_t* ppClippingFlag
         {
             *pClippingFlags |= (uint8_t)clip_flag_t::Near;
         }
-#endif
     }
 }
 
@@ -889,100 +872,111 @@ void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisib
     const triangle4f_t* pVisibleTriangles = (triangle4f_t*)pVisibleTriangleBuffer->pData;
     for(uint32_t triangleIndex = 0; triangleIndex < pVisibleTriangleBuffer->count; ++triangleIndex)
     {
+        bool clipped = false;
+        bool currentVertexClipped = false;
         const triangle4f_t* pTriangle = pVisibleTriangles + triangleIndex;
         vector4f_t intersectionPoint = {};
-        uint8_t clippingFlags[3] = {0};
-        _k15_get_clipping_flags(pTriangle->points, clippingFlags);
 
         for(uint32_t vertexIndex = 0; vertexIndex < 3u; ++vertexIndex)
         {
             const uint32_t nextVertexIndex = ( vertexIndex + 1u ) % 3u;
+
             vector4f_t edgeVertices[2] = {pTriangle->points[vertexIndex], pTriangle->points[nextVertexIndex]};
-            uint8_t clipFlags[2] = {clippingFlags[vertexIndex], clippingFlags[nextVertexIndex]};
-            
-            if( ( clipFlags[0] | clipFlags[1] ) == 0 )
+            uint8_t clippingFlags[2] = {0};
+
+            _k15_get_clipping_flags(edgeVertices, clippingFlags);
+
+        clipStart:
+            if( ( clippingFlags[0] | clippingFlags[1] ) == 0 )
             {
-                 _k15_static_buffer_push_back(&localClippedVertices, {edgeVertices[0], triangleIndex});
-                 continue;
+                if( !currentVertexClipped )
+                {
+                    _k15_static_buffer_push_back(&localClippedVertices, {edgeVertices[0], triangleIndex});
+                }
+
+                currentVertexClipped = false;
+
+                if( clipped )
+                {
+                    _k15_static_buffer_push_back(&localClippedVertices, {intersectionPoint, triangleIndex});
+                    clipped = false;
+                }
+
+                _k15_get_clipping_flags(edgeVertices, clippingFlags);
+                continue;
             }
             else
             {
-                const uint8_t clipAnd = clipFlags[0] & clipFlags[1];
+                const uint8_t clipAnd = clippingFlags[0] & clippingFlags[1];
                 if( clipAnd != 0 )
                 {
                     continue;
                 }
 
-                const uint8_t vertexIndex = clipFlags[0] == 0 ? 1 : 0;
+                const uint8_t vertexIndex = clippingFlags[0] == 0 ? 1 : 0;
                 const vector4f_t delta = _k15_vector4f_sub(edgeVertices[!vertexIndex], edgeVertices[vertexIndex]);
-                vector4f_t intersectionPoint = edgeVertices[vertexIndex];
-                const float posW = intersectionPoint.w * 0.8f;
-                const float negW = -posW;
 
-                if( clipFlags[0] == 0 )
+                currentVertexClipped = clippingFlags[0] != 0u;
+                intersectionPoint = edgeVertices[vertexIndex];
+                if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Left )
                 {
-                    _k15_static_buffer_push_back(&localClippedVertices, {edgeVertices[0], triangleIndex});
+                    const float t = ( -edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].x ) / ( ( -edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].x ) - ( -edgeVertices[!vertexIndex].w - edgeVertices[!vertexIndex].x ) );
+                    intersectionPoint.y = intersectionPoint.y + ( edgeVertices[!vertexIndex].y - intersectionPoint.y ) * t;
+                    intersectionPoint.z = intersectionPoint.z + ( edgeVertices[!vertexIndex].z - intersectionPoint.z ) * t;
+                    intersectionPoint.w = intersectionPoint.w + ( edgeVertices[!vertexIndex].w - intersectionPoint.w ) * t;
+
+                    intersectionPoint.x = -intersectionPoint.w;
+                }
+                else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Right )
+                {
+                    const float t = ( edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].x ) / ( ( edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].x ) - ( edgeVertices[!vertexIndex].w - edgeVertices[!vertexIndex].x ) );
+                    intersectionPoint.y = intersectionPoint.y + delta.y * t;
+                    intersectionPoint.z = intersectionPoint.z + delta.z * t;
+                    intersectionPoint.w = intersectionPoint.w + delta.w * t;
+
+                    intersectionPoint.x = intersectionPoint.w;
+                }
+                else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Top )
+                {
+                    const float t = ( -edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].y ) / ( ( -edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].y ) - ( -edgeVertices[!vertexIndex].w - edgeVertices[!vertexIndex].y ) );
+                    intersectionPoint.x = intersectionPoint.x + ( edgeVertices[!vertexIndex].x - intersectionPoint.x ) * t;
+                    intersectionPoint.z = intersectionPoint.z + ( edgeVertices[!vertexIndex].z - intersectionPoint.z ) * t;
+                    intersectionPoint.w = intersectionPoint.w + ( edgeVertices[!vertexIndex].w - intersectionPoint.w ) * t;
+
+                    intersectionPoint.y = -intersectionPoint.w;
+                }
+                else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Bottom )
+                {
+                    const float t = ( edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].y ) / ( ( edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].y ) - ( edgeVertices[!vertexIndex].w - edgeVertices[!vertexIndex].y ) );
+                    intersectionPoint.x = intersectionPoint.x + delta.x * t;
+                    intersectionPoint.z = intersectionPoint.z + delta.z * t;
+                    intersectionPoint.w = intersectionPoint.w + delta.w * t;
+
+                    intersectionPoint.y = intersectionPoint.w;
+                }
+                else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Far )
+                {
+                    const float t = ( -edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].z ) / ( ( -edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].z ) - ( -edgeVertices[!vertexIndex].w - edgeVertices[!vertexIndex].z ) );
+                    intersectionPoint.x = intersectionPoint.x + delta.x * t;
+                    intersectionPoint.y = intersectionPoint.y + delta.y * t;
+                    intersectionPoint.w = intersectionPoint.w + delta.w * t;
+
+                    intersectionPoint.z = -intersectionPoint.w;
+                }
+                else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Near )
+                {
+                    const float t = ( edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].z ) / ( ( edgeVertices[vertexIndex].w - edgeVertices[vertexIndex].z ) - ( edgeVertices[!vertexIndex].w - edgeVertices[!vertexIndex].z ) );
+                    intersectionPoint.x = intersectionPoint.x + delta.x * t;
+                    intersectionPoint.y = intersectionPoint.y + delta.y * t;
+                    intersectionPoint.w = intersectionPoint.w + delta.w * t;
+
+                    intersectionPoint.z = intersectionPoint.w;
                 }
 
-                if( clipFlags[vertexIndex] & (uint8_t)clip_flag_t::Left )
-                {
-                    const float t = ( negW - intersectionPoint.x ) / delta.x;
-                    intersectionPoint.x = negW;
-                    intersectionPoint.y += delta.y * t;
-                    intersectionPoint.z += delta.z * t;
-
-                    _k15_static_buffer_push_back(&localClippedVertices, {intersectionPoint, triangleIndex});
-                }
-                
-                if( clipFlags[vertexIndex] & (uint8_t)clip_flag_t::Right )
-                {
-                    const float t = ( posW - intersectionPoint.x ) / delta.x;
-                    intersectionPoint.x = posW;
-                    intersectionPoint.y += delta.y * t;
-                    intersectionPoint.z += delta.z * t;
-
-                    _k15_static_buffer_push_back(&localClippedVertices, {intersectionPoint, triangleIndex});
-                }
-                
-                if( clipFlags[vertexIndex] & (uint8_t)clip_flag_t::Top )
-                {
-                    const float t = ( negW - intersectionPoint.y ) / delta.y;
-                    intersectionPoint.x += delta.x * t;
-                    intersectionPoint.y = negW;
-                    intersectionPoint.z += delta.z * t;
-
-                    _k15_static_buffer_push_back(&localClippedVertices, {intersectionPoint, triangleIndex});
-                }
-                
-                if( clipFlags[vertexIndex] & (uint8_t)clip_flag_t::Bottom )
-                {
-                    const float t = ( posW - intersectionPoint.y ) / delta.y;
-                    intersectionPoint.x += delta.x * t;
-                    intersectionPoint.y = posW;
-                    intersectionPoint.z += delta.z * t;
-
-                    _k15_static_buffer_push_back(&localClippedVertices, {intersectionPoint, triangleIndex});
-                }
-                
-                if( clipFlags[vertexIndex] & (uint8_t)clip_flag_t::Far )
-                {
-                    const float t = ( negW - intersectionPoint.z ) / delta.z;
-                    intersectionPoint.x += delta.x * t;
-                    intersectionPoint.y += delta.z * t;
-                    intersectionPoint.z = negW;
-
-                    _k15_static_buffer_push_back(&localClippedVertices, {intersectionPoint, triangleIndex});
-                }
-                
-                if( clipFlags[vertexIndex] & (uint8_t)clip_flag_t::Near )
-                {
-                    const float t = ( posW - intersectionPoint.z ) / delta.z;
-                    intersectionPoint.x += delta.x * t;
-                    intersectionPoint.y += delta.z * t;
-                    intersectionPoint.z = posW;
-
-                    _k15_static_buffer_push_back(&localClippedVertices, {intersectionPoint, triangleIndex});
-                }
+                edgeVertices[vertexIndex] = intersectionPoint;
+                _k15_get_clipping_flags(edgeVertices, clippingFlags);
+                clipped = true;
+                goto clipStart;
             }
         }
     }
@@ -994,7 +988,20 @@ void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisib
         RuntimeAssert(remainingVertexCount >= 3u);
         
         const uint32_t localTriangleIndex = pTriangleVertices[clippedVertexIndex].triangleId;
-        if(remainingVertexCount >= 4u && 
+        if(remainingVertexCount >= 5u &&
+           pTriangleVertices[clippedVertexIndex + 1].triangleId == localTriangleIndex &&
+           pTriangleVertices[clippedVertexIndex + 2].triangleId == localTriangleIndex &&
+           pTriangleVertices[clippedVertexIndex + 3].triangleId == localTriangleIndex &&
+           pTriangleVertices[clippedVertexIndex + 4].triangleId == localTriangleIndex)
+        {
+            triangle4f_t* pTriangles = _k15_dynamic_buffer_push_back(pClippedTriangleBuffer, 3u);
+            pTriangles[0] = {pTriangleVertices[clippedVertexIndex + 0].position, pTriangleVertices[clippedVertexIndex + 1].position, pTriangleVertices[clippedVertexIndex + 2].position};
+            pTriangles[1] = {pTriangleVertices[clippedVertexIndex + 2].position, pTriangleVertices[clippedVertexIndex + 3].position, pTriangleVertices[clippedVertexIndex + 4].position};
+            pTriangles[2] = {pTriangleVertices[clippedVertexIndex + 4].position, pTriangleVertices[clippedVertexIndex + 0].position, pTriangleVertices[clippedVertexIndex + 2].position};
+
+            clippedVertexIndex += 5;
+        }
+        else if(remainingVertexCount >= 4u && 
            pTriangleVertices[clippedVertexIndex + 1].triangleId == localTriangleIndex &&
            pTriangleVertices[clippedVertexIndex + 2].triangleId == localTriangleIndex &&
            pTriangleVertices[clippedVertexIndex + 3].triangleId == localTriangleIndex)
@@ -1109,20 +1116,6 @@ void k15_draw_text_formatted(uint8_t* pColorBuffer, const bitmap_font_t* pFont, 
     k15_draw_text(pColorBuffer, pFont, colorBufferWidth, colorBufferHeight, colorBufferStride, x, y, textBuffer);
 }
 
-
-void k15_draw_statistics(void* pColorBuffer, const bitmap_font_t* pFont, uint32_t colorBufferWidth, uint32_t colorBufferHeight, uint32_t colorBufferStride)
-{
-#ifndef K15_SOFTWARE_RASTERIZER_TRACK_STATISTICS
-    UnusedVariable(pColorBuffer);
-    UnusedVariable(pFont);
-    UnusedVariable(colorBufferStride);
-    return;
-#endif
-
-    uint8_t* restrict_modifier pOutputPixels = (uint8_t*)pColorBuffer;
-    //k15_draw_text_formatted(pOutputPixels, pFont, colorBufferWidth, colorBufferHeight, colorBufferStride, 0, 0, "Triangles: %u", 20);
-}
-
 void k15_draw_frame(software_rasterizer_context_t* pContext)
 {
     k15_transform_triangles(&pContext->projectionMatrix, &pContext->viewMatrix, &pContext->triangles);
@@ -1130,8 +1123,6 @@ void k15_draw_frame(software_rasterizer_context_t* pContext)
     k15_clip_triangles(&pContext->visibleTriangles, &pContext->clippedTriangles);
     k15_project_triangles_into_screenspace(&pContext->clippedTriangles, &pContext->screenSpaceTriangles, pContext->backBufferWidth, pContext->backBufferHeight);
     k15_draw_triangles(pContext->pColorBuffer[pContext->currentColorBufferIndex], pContext->backBufferStride, &pContext->screenSpaceTriangles);
-
-    k15_draw_statistics(pContext->pColorBuffer[pContext->currentColorBufferIndex], &pContext->font, pContext->backBufferWidth, pContext->backBufferHeight, pContext->backBufferStride);
 
     pContext->triangles.count = 0;
     pContext->visibleTriangles.count = 0;

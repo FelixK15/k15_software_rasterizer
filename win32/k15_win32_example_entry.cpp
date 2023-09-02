@@ -1,7 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #define K15_SOFTWARE_RASTERIZER_IMPLEMENTATION
-#define K15_SOFTWARE_RASTERIZER_TRACK_STATISTICS
 #include "../k15_software_rasterizer.hpp"
 
 #define NOMINMAX
@@ -24,7 +23,6 @@ void allocateDebugConsole()
 
 software_rasterizer_context_t* pContext = nullptr;
 uint32_t* pBackBufferPixels = 0;
-
 BITMAPINFO* pBackBufferBitmapInfo = 0;
 HBITMAP backBufferBitmap = 0;
 
@@ -38,91 +36,100 @@ vector3f_t cameraPos = {0.0f, 0.0f, 4.0f};
 vector3f_t cameraVelocity = {};
 
 constexpr vector3f_t test_cube_vertices[] = {
-	{-0.5f, -0.5f, 1.0f},
-	{ 0.5f, -0.5f, 1.0f},
-	{-0.5f,  0.5f, 1.0f},
+	{-0.5f, -0.5f, -0.5f},
+	{ 0.5f, -0.5f, -0.5f},
+	{-0.5f,  0.5f, -0.5f},
 
-	{ 0.5f, -0.5f, 1.0f},
-	{ 0.5f,  0.5f, 1.0f},
-	{-0.5f,  0.5f, 1.0f},
+	{ 0.5f, -0.5f, -0.5f},
+	{ 0.5f,  0.5f, -0.5f},
+	{-0.5f,  0.5f, -0.5f},
 
-	{-0.5f, -0.5f, 2.0f},
-	{ 0.5f, -0.5f, 2.0f},
-	{-0.5f,  0.5f, 2.0f},
+	{-0.5f, -0.5f,  0.5f},
+	{ 0.5f, -0.5f,  0.5f},
+	{-0.5f,  0.5f,  0.5f},
 
-	{ 0.5f, -0.5f, 2.0f},
-	{ 0.5f,  0.5f, 2.0f},
-	{-0.5f,  0.5f, 2.0f},
+	{ 0.5f, -0.5f,  0.5f},
+	{ 0.5f,  0.5f,  0.5f},
+	{-0.5f,  0.5f,  0.5f},
 
-	{-0.5f, -0.5f, 1.0f},
-	{-0.5f,  0.5f, 1.0f},
-	{-0.5f,  0.5f, 2.0f},
+	{-0.5f, -0.5f, -0.5f},
+	{-0.5f,  0.5f, -0.5f},
+	{-0.5f,  0.5f,  0.5f},
 
-	{-0.5f,  0.5f, 2.0f},
-	{-0.5f, -0.5f, 2.0f},
-	{-0.5f, -0.5f, 1.0f},
+	{-0.5f,  0.5f,  0.5f},
+	{-0.5f, -0.5f,  0.5f},
+	{-0.5f, -0.5f, -0.5f},
 
-	{ 0.5f, -0.5f, 1.0f},
-	{ 0.5f,  0.5f, 1.0f},
-	{ 0.5f,  0.5f, 2.0f},
+	{ 0.5f, -0.5f, -0.5f},
+	{ 0.5f,  0.5f, -0.5f},
+	{ 0.5f,  0.5f,  0.5f},
 
-	{ 0.5f,  0.5f, 2.0f},
-	{ 0.5f, -0.5f, 2.0f},
-	{ 0.5f, -0.5f, 1.0f},
+	{ 0.5f,  0.5f,  0.5f},
+	{ 0.5f, -0.5f,  0.5f},
+	{ 0.5f, -0.5f, -0.5f},
 
-	{ 0.5f, 0.5f, 2.0f},
-	{-0.5f, 0.5f, 2.0f},
-	{-0.5f, 0.5f, 1.0f},
+	{ 0.5f, 0.5f,  0.5f},
+	{-0.5f, 0.5f,  0.5f},
+	{-0.5f, 0.5f, -0.5f},
 
-	{-0.5f, 0.5f, 1.0f},
-	{ 0.5f, 0.5f, 1.0f},
-	{ 0.5f, 0.5f, 2.0f},
+	{-0.5f, 0.5f, -0.5f},
+	{ 0.5f, 0.5f, -0.5f},
+	{ 0.5f, 0.5f,  0.5f},
 
-	{ 0.5f, -0.5f, 2.0f},
-	{-0.5f, -0.5f, 2.0f},
-	{-0.5f, -0.5f, 1.0f},
+	{ 0.5f, -0.5f,  0.5f},
+	{-0.5f, -0.5f,  0.5f},
+	{-0.5f, -0.5f, -0.5f},
 
-	{-0.5f, -0.5f, 1.0f},
-	{ 0.5f, -0.5f, 1.0f},
-	{ 0.5f, -0.5f, 2.0f},
+	{-0.5f, -0.5f, -0.5f},
+	{ 0.5f, -0.5f, -0.5f},
+	{ 0.5f, -0.5f,  0.5f},
 };
 
+#if 0
 constexpr vector3f_t test_triangle_vertices[] = {
 	{ -0.5f, -0.5f, 0.0f},
 	{  0.0f,  0.5f, 0.0f},
 	{  0.5f, -0.5f, 0.0f}
 };
+#else
+constexpr vector3f_t test_triangle_vertices[] = {
+	{  0.5f, -0.5f, 0.0f},
+	{  0.0f,  0.5f, 0.0f},
+	{ -0.5f, -0.5f, 0.0f}
+};
+#endif
 
-void createBackBuffer(HWND hwnd, int width, int height)
+uint8_t* createGDIColorBuffer(HDC deviceContext, BITMAPINFO** ppColorBufferBitmapInfo, HBITMAP* pColorBufferBitmap, int width, int height)
 {		
-	if (pBackBufferBitmapInfo != NULL)
+	if (*ppColorBufferBitmapInfo != NULL)
 	{
-		free(pBackBufferBitmapInfo);
-		pBackBufferBitmapInfo = NULL;
-		pBackBufferPixels = NULL;
+		free(*ppColorBufferBitmapInfo);
+		*ppColorBufferBitmapInfo = NULL;
 	}
 
-	if (backBufferBitmap != NULL)
+	if (*pColorBufferBitmap != NULL)
 	{
-		DeleteObject(backBufferBitmap);
-		backBufferBitmap = NULL;
+		DeleteObject(*pColorBufferBitmap);
+		*pColorBufferBitmap = NULL;
 	}
 
-	pBackBufferBitmapInfo = (BITMAPINFO*)malloc(sizeof(BITMAPINFO));
-	pBackBufferBitmapInfo->bmiHeader.biSize = sizeof(BITMAPINFO);
-	pBackBufferBitmapInfo->bmiHeader.biWidth = width;
-	pBackBufferBitmapInfo->bmiHeader.biHeight = -(int)height;
-	pBackBufferBitmapInfo->bmiHeader.biPlanes = 1;
-	pBackBufferBitmapInfo->bmiHeader.biBitCount = 32;
-	pBackBufferBitmapInfo->bmiHeader.biCompression = BI_RGB;
+	*ppColorBufferBitmapInfo = (BITMAPINFO*)malloc(sizeof(BITMAPINFO));
+	(*ppColorBufferBitmapInfo)->bmiHeader.biSize = sizeof(BITMAPINFO);
+	(*ppColorBufferBitmapInfo)->bmiHeader.biWidth = width;
+	(*ppColorBufferBitmapInfo)->bmiHeader.biHeight = -(int)height;
+	(*ppColorBufferBitmapInfo)->bmiHeader.biPlanes = 1;
+	(*ppColorBufferBitmapInfo)->bmiHeader.biBitCount = 32;
+	(*ppColorBufferBitmapInfo)->bmiHeader.biCompression = BI_RGB;
 	//FK: XRGB
 
-	HDC deviceContext = GetDC(hwnd);
-	backBufferBitmap = CreateDIBSection(deviceContext, pBackBufferBitmapInfo, DIB_RGB_COLORS, (void**)&pBackBufferPixels, NULL, 0);   
-	if (backBufferBitmap == NULL && pBackBufferPixels == NULL)
+	uint8_t* pColorBufferPixels = nullptr;
+	*pColorBufferBitmap = CreateDIBSection(deviceContext, *ppColorBufferBitmapInfo, DIB_RGB_COLORS, (void**)&pColorBufferPixels, NULL, 0);   
+	if (*pColorBufferBitmap == NULL && pBackBufferPixels == NULL)
 	{
 		MessageBoxA(0, "Error during CreateDIBSection.", "Error!", 0);
 	}
+
+	return pColorBufferPixels;
 }
 
 void K15_WindowCreated(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -169,7 +176,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.x = 0.001f;
+			cameraVelocity.x = 0.0005f;
 		}
 		else if(isKeyUp)
 		{
@@ -181,7 +188,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.x = -0.001f;
+			cameraVelocity.x = -0.0005f;
 		}
 		else if(isKeyUp)
 		{
@@ -236,8 +243,6 @@ void K15_WindowResized(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 
 	screenWidth = newWidth;
 	screenHeight = newHeight;
-
-	//createBackBuffer(hwnd, newWidth, newHeight);
 }
 
 LRESULT CALLBACK K15_WNDPROC(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -324,10 +329,12 @@ HWND setupWindow(HINSTANCE instance, int width, int height)
 	else
 	{
 		ShowWindow(hwnd, SW_SHOW);
-		createBackBuffer(hwnd, virtualScreenWidth, virtualScreenHeight);
 
 		screenWidth = windowWidth;
 		screenHeight = windowHeight;
+
+		HDC deviceContext = GetDC(hwnd);
+		pBackBufferPixels = (uint32_t*)createGDIColorBuffer(deviceContext, &pBackBufferBitmapInfo, &backBufferBitmap, virtualScreenWidth, virtualScreenHeight);
 
 		if(pContext != nullptr)
 		{
@@ -360,10 +367,8 @@ bool setup()
 	return k15_create_software_rasterizer_context(&pContext, &parameters);
 }
 
-void drawBackBuffer(HWND hwnd)
+void drawBackBuffer(HDC deviceContext)
 {
-	HDC deviceContext = GetDC(hwnd);
-
 	StretchDIBits(deviceContext, 0, 0, screenWidth, screenHeight, 0, 0, virtualScreenWidth, virtualScreenHeight, 
 		pBackBufferPixels, pBackBufferBitmapInfo, DIB_RGB_COLORS, SRCCOPY);  
 
@@ -372,7 +377,7 @@ void drawBackBuffer(HWND hwnd)
 
 void doFrame(uint32_t DeltaTimeInMS)
 {
-#if 0
+#if 1
 	const vector3f_t* pGeometry = test_cube_vertices;
 	const uint32_t geometryVertexCount = sizeof(test_cube_vertices)/sizeof(vector3f_t);
 #else
@@ -380,9 +385,8 @@ void doFrame(uint32_t DeltaTimeInMS)
 	const uint32_t geometryVertexCount = sizeof(test_triangle_vertices)/sizeof(vector3f_t);
 #endif
 
-#if 1
 	k15_begin_geometry(pContext, topology_t::triangle);
-	static float angle = 0.0f;
+	static float angle = 0.5f;
 	angle += 0.001f;
 	matrix4x4f_t rotation = {cosf(angle), 0.0f, sinf(angle), 0.0f,
 							 0.0f, 1.0f, 0.0f, 0.0f,
@@ -392,19 +396,11 @@ void doFrame(uint32_t DeltaTimeInMS)
 	{
 		vector4f_t geometryVector = {pGeometry[i].x, pGeometry[i].y, pGeometry[i].z, 1.0f};
 		vector4f_t rotatedVector = _k15_mul_vector4_matrix44(&geometryVector, &rotation);
-		//k15_vertex_position(pContext, pGeometry[i].x, pGeometry[i].y, pGeometry[i].z);
 		k15_vertex_position(pContext, rotatedVector.x, rotatedVector.y, rotatedVector.z);
 	}
 
 	k15_end_geometry(pContext);
-#else
-	begin_geometry(pContext, topology::triangle);
-	vertex_position(pContext, -0.5f, 0.0f, 1.0f);
-	vertex_position(pContext, 0.0f, 0.5f, 1.0f);
-	vertex_position(pContext, 0.5f, 0.0f, 1.0f);
-	end_geometry(pContext);
-#endif
-	
+
 	cameraPos.x += cameraVelocity.x;
 	cameraPos.y += cameraVelocity.y;
 	cameraPos.z += cameraVelocity.z;
@@ -462,7 +458,9 @@ int CALLBACK WinMain(HINSTANCE hInstance,
 		}
 
 		doFrame(deltaMs);
-		drawBackBuffer(hwnd);
+
+		HDC deviceContext = GetDC(hwnd);
+		drawBackBuffer(deviceContext);
 
 		timeFrameEnded = getTimeInMilliseconds(performanceFrequency);
 		deltaMs = timeFrameEnded - timeFrameStarted;
