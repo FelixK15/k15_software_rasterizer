@@ -3,6 +3,9 @@
 #define K15_SOFTWARE_RASTERIZER_IMPLEMENTATION
 #include "../k15_software_rasterizer.hpp"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -32,72 +35,90 @@ int virtualScreenHeight = 240;
 int screenWidth = virtualScreenWidth*3;
 int screenHeight = virtualScreenHeight*3;
 
-vector3f_t cameraPos = {0.0f, 0.0f, 4.0f};
+vector3f_t cameraPos = {0.0f, 0.0f, 1.5f};
 vector3f_t cameraVelocity = {};
 
-constexpr vector3f_t test_cube_vertices[] = {
-	{-0.5f, -0.5f, -0.5f},
-	{ 0.5f, -0.5f, -0.5f},
-	{-0.5f,  0.5f, -0.5f},
+constexpr vector4f_t test_cube_vertices[] = {
+	{-0.5f, -0.5f, -0.5f, 1.0f },
+	{ 0.5f, -0.5f, -0.5f, 1.0f },
+	{-0.5f,  0.5f, -0.5f, 1.0f },
 
-	{ 0.5f, -0.5f, -0.5f},
-	{ 0.5f,  0.5f, -0.5f},
-	{-0.5f,  0.5f, -0.5f},
+	{ 0.5f, -0.5f, -0.5f, 1.0f },
+	{ 0.5f,  0.5f, -0.5f, 1.0f },
+	{-0.5f,  0.5f, -0.5f, 1.0f },
 
-	{-0.5f, -0.5f,  0.5f},
-	{ 0.5f, -0.5f,  0.5f},
-	{-0.5f,  0.5f,  0.5f},
+	{-0.5f, -0.5f,  0.5f, 1.0f },
+	{ 0.5f, -0.5f,  0.5f, 1.0f },
+	{-0.5f,  0.5f,  0.5f, 1.0f },
 
-	{ 0.5f, -0.5f,  0.5f},
-	{ 0.5f,  0.5f,  0.5f},
-	{-0.5f,  0.5f,  0.5f},
+	{ 0.5f, -0.5f,  0.5f, 1.0f },
+	{ 0.5f,  0.5f,  0.5f, 1.0f },
+	{-0.5f,  0.5f,  0.5f, 1.0f },
 
-	{-0.5f, -0.5f, -0.5f},
-	{-0.5f,  0.5f, -0.5f},
-	{-0.5f,  0.5f,  0.5f},
+	{-0.5f, -0.5f, -0.5f, 1.0f },
+	{-0.5f,  0.5f, -0.5f, 1.0f },
+	{-0.5f,  0.5f,  0.5f, 1.0f },
 
-	{-0.5f,  0.5f,  0.5f},
-	{-0.5f, -0.5f,  0.5f},
-	{-0.5f, -0.5f, -0.5f},
+	{-0.5f,  0.5f,  0.5f, 1.0f },
+	{-0.5f, -0.5f,  0.5f, 1.0f },
+	{-0.5f, -0.5f, -0.5f, 1.0f },
 
-	{ 0.5f, -0.5f, -0.5f},
-	{ 0.5f,  0.5f, -0.5f},
-	{ 0.5f,  0.5f,  0.5f},
+	{ 0.5f, -0.5f, -0.5f, 1.0f },
+	{ 0.5f,  0.5f, -0.5f, 1.0f },
+	{ 0.5f,  0.5f,  0.5f, 1.0f },
 
-	{ 0.5f,  0.5f,  0.5f},
-	{ 0.5f, -0.5f,  0.5f},
-	{ 0.5f, -0.5f, -0.5f},
+	{ 0.5f,  0.5f,  0.5f, 1.0f },
+	{ 0.5f, -0.5f,  0.5f, 1.0f },
+	{ 0.5f, -0.5f, -0.5f, 1.0f },
 
-	{ 0.5f, 0.5f,  0.5f},
-	{-0.5f, 0.5f,  0.5f},
-	{-0.5f, 0.5f, -0.5f},
+	{ 0.5f, 0.5f,  0.5f, 1.0f },
+	{-0.5f, 0.5f,  0.5f, 1.0f },
+	{-0.5f, 0.5f, -0.5f, 1.0f },
 
-	{-0.5f, 0.5f, -0.5f},
-	{ 0.5f, 0.5f, -0.5f},
-	{ 0.5f, 0.5f,  0.5f},
+	{-0.5f, 0.5f, -0.5f, 1.0f },
+	{ 0.5f, 0.5f, -0.5f, 1.0f },
+	{ 0.5f, 0.5f,  0.5f, 1.0f },
 
-	{ 0.5f, -0.5f,  0.5f},
-	{-0.5f, -0.5f,  0.5f},
-	{-0.5f, -0.5f, -0.5f},
+	{ 0.5f, -0.5f,  0.5f, 1.0f },
+	{-0.5f, -0.5f,  0.5f, 1.0f },
+	{-0.5f, -0.5f, -0.5f, 1.0f },
 
-	{-0.5f, -0.5f, -0.5f},
-	{ 0.5f, -0.5f, -0.5f},
-	{ 0.5f, -0.5f,  0.5f},
+	{-0.5f, -0.5f, -0.5f, 1.0f },
+	{ 0.5f, -0.5f, -0.5f, 1.0f },
+	{ 0.5f, -0.5f,  0.5f, 1.0f },
 };
 
-#if 0
-constexpr vector3f_t test_triangle_vertices[] = {
-	{ -0.5f, -0.5f, 0.0f},
-	{  0.0f,  0.5f, 0.0f},
-	{  0.5f, -0.5f, 0.0f}
+constexpr vector4f_t test_triangle_vertices[] = {
+	{  0.5f, -0.5f, 0.0f, 1.0f },
+	{  0.5f,  0.5f, 0.0f, 1.0f },
+	{ -0.5f, -0.5f, 0.0f, 1.0f }
 };
-#else
-constexpr vector3f_t test_triangle_vertices[] = {
-	{  0.5f, -0.5f, 0.0f},
-	{  0.0f,  0.5f, 0.0f},
-	{ -0.5f, -0.5f, 0.0f}
+
+constexpr vector2f_t test_triangle_uvs[] = {
+	{  0.0f, 0.0f },
+	{  0.0f, 1.0f },
+	{  1.0f, 0.0f }
 };
-#endif
+
+constexpr vector4f_t test_quad_vertices[] = {
+	{  0.5f, -0.5f, 0.0f, 1.0f },
+	{  0.5f,  0.5f, 0.0f, 1.0f },
+	{ -0.5f,  0.5f, 0.0f, 1.0f },
+
+	{ -0.5f,  0.5f, 0.0f, 1.0f },
+	{ -0.5f, -0.5f, 0.0f, 1.0f },
+	{  0.5f, -0.5f, 0.0f, 1.0f }
+};
+
+constexpr vector2f_t test_quad_uvs[] = {
+	{ 1.0f, 0.0f },
+	{ 1.0f, 1.0f },
+	{ 0.0f, 1.0f },
+
+	{ 0.0f, 1.0f },
+	{ 0.0f, 0.0f },
+	{ 1.0f, 0.0f }
+};
 
 uint8_t* createGDIColorBuffer(HDC deviceContext, BITMAPINFO** ppColorBufferBitmapInfo, HBITMAP* pColorBufferBitmap, int width, int height)
 {		
@@ -228,7 +249,8 @@ void K15_MouseButtonInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 
 void K15_MouseMove(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 {
-
+	mouseX = (lparam & 0xFFFF) / 3;
+	mouseY = ((lparam & 0xFFFF0000) >> 16) / 3;
 }
 
 void K15_MouseWheel(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -355,6 +377,15 @@ uint32_t getTimeInMilliseconds(LARGE_INTEGER PerformanceFrequency)
 	return (uint32_t)(appTime.QuadPart / PerformanceFrequency.QuadPart);
 }
 
+int imageWidth = 0;
+int imageHeight = 0;
+int imageComponentCount = 0;
+uint8_t* pImage = NULL;
+
+vertex_buffer_handle_t vertexBuffer = k15_invalid_vertex_buffer_handle;
+texture_handle_t texture = k15_invalid_texture_handle;
+uint32_t vertexCount = 0;
+
 bool setup()
 {
 	software_rasterizer_context_init_parameters_t parameters;
@@ -364,7 +395,53 @@ bool setup()
 	parameters.pColorBuffers[0]	= pBackBufferPixels;
 	parameters.colorBufferCount = 1;
 	
-	return k15_create_software_rasterizer_context(&pContext, &parameters);
+	pImage = stbi_load("texture.png", &imageWidth, &imageHeight, &imageComponentCount, 3u);
+	if(pImage == nullptr)
+	{
+		printf("Can't load \"texture.png\".\n");
+		return false;
+	}
+
+	if(!k15_create_software_rasterizer_context(&pContext, &parameters))
+	{
+		printf("Couldn't create software rendering context.\n");
+		return false;
+	}
+
+#if 0
+	const vector4f_t* pGeometry = test_cube_vertices;
+	vertexCount = sizeof(test_cube_vertices)/sizeof(vector4f_t);
+#elif 0
+	const vector4f_t* pGeometry = test_triangle_vertices;
+	const vector2f_t* pUVs = test_triangle_uvs;
+	vertexCount = sizeof(test_triangle_vertices)/sizeof(vector4f_t);
+#else
+	const vector4f_t* pGeometry = test_quad_vertices;
+	const vector2f_t* pUVs = test_quad_uvs;
+	vertexCount = sizeof(test_quad_vertices)/sizeof(vector4f_t);
+#endif
+
+	vertex_t* pVertices = (vertex_t*)malloc(sizeof(vertex_t) * vertexCount);
+	for( uint32_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex )
+	{
+		pVertices[vertexIndex].position = pGeometry[vertexIndex];
+		pVertices[vertexIndex].normal 	= k15_create_vector3f(1.0f, 0.0f, 0.0f);
+		pVertices[vertexIndex].texcoord = pUVs[vertexIndex];
+	}
+
+	vertexBuffer = k15_create_vertex_buffer( pContext, pVertices, vertexCount );
+	if(!k15_is_valid_vertex_buffer(vertexBuffer))
+	{
+		return false;
+	}
+
+	texture = k15_create_texture( pContext, imageWidth, imageHeight, imageWidth, imageComponentCount, pImage );
+	if(!k15_is_valid_texture(texture))
+	{
+		return false;
+	}
+
+	return true;
 }
 
 void drawBackBuffer(HDC deviceContext)
@@ -377,35 +454,25 @@ void drawBackBuffer(HDC deviceContext)
 
 void doFrame(uint32_t DeltaTimeInMS)
 {
-#if 1
-	const vector3f_t* pGeometry = test_cube_vertices;
-	const uint32_t geometryVertexCount = sizeof(test_cube_vertices)/sizeof(vector3f_t);
-#else
-	const vector3f_t* pGeometry = test_triangle_vertices;
-	const uint32_t geometryVertexCount = sizeof(test_triangle_vertices)/sizeof(vector3f_t);
-#endif
-
-	k15_begin_geometry(pContext, topology_t::triangle);
 	static float angle = 0.5f;
 	angle += 0.001f;
+
+	cameraPos = _k15_vector3f_add(cameraVelocity, cameraPos);
+
 	matrix4x4f_t rotation = {cosf(angle), 0.0f, sinf(angle), 0.0f,
 							 0.0f, 1.0f, 0.0f, 0.0f,
 							 -sinf(angle), 0.0f, cosf(angle), 0.0f,
 							 0.0f, 0.0f, 0.0f, 1.0f};
-	for(uint32_t i = 0; i < geometryVertexCount; ++i)
-	{
-		vector4f_t geometryVector = {pGeometry[i].x, pGeometry[i].y, pGeometry[i].z, 1.0f};
-		vector4f_t rotatedVector = _k15_mul_vector4_matrix44(&geometryVector, &rotation);
-		k15_vertex_position(pContext, rotatedVector.x, rotatedVector.y, rotatedVector.z);
-	}
 
-	k15_end_geometry(pContext);
+	matrix4x4f_t viewMatrix = {1.0f, 0.0f, 0.0f, -cameraPos.x,
+							   0.0f, 1.0f, 0.0f, -cameraPos.y,
+							   0.0f, 0.0f, 1.0f, -cameraPos.z,
+							   0.0f, 0.0f, 0.0f, 1.0f};
 
-	cameraPos.x += cameraVelocity.x;
-	cameraPos.y += cameraVelocity.y;
-	cameraPos.z += cameraVelocity.z;
-
-	k15_set_camera_pos(pContext, cameraPos);
+	k15_bind_vertex_buffer(pContext, vertexBuffer);
+	k15_bind_texture(pContext, texture, 0);
+	k15_bind_view_matrix(pContext, &viewMatrix);
+	k15_draw(pContext, vertexCount, 0u);
 
 	k15_draw_frame(pContext);
 	k15_swap_color_buffers(pContext);
