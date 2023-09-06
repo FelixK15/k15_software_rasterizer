@@ -73,6 +73,7 @@ struct software_rasterizer_context_init_parameters_t
     uint32_t    backBufferHeight;
     uint32_t    backBufferStride;
     void*       pColorBuffers[3];
+    void*       pDepthBuffers[3];
     uint8_t     colorBufferCount;
 };
 
@@ -90,7 +91,7 @@ bool                    k15_is_valid_vertex_buffer(const vertex_buffer_handle_t 
 bool                    k15_is_valid_texture(const texture_handle_t texture);
 
 vertex_buffer_handle_t k15_create_vertex_buffer(software_rasterizer_context_t* pContext, uint32_t vertexSizeInBytes, const void* pVertexData, uint32_t vertexDataSizeInBytes);
-texture_handle_t       k15_create_texture(software_rasterizer_context_t* pContext, uint32_t width, uint32_t height, uint32_t stride, uint8_t componentCount, const void* pTextureData);
+texture_handle_t       k15_create_texture(software_rasterizer_context_t* pContext, const char* pName, uint32_t width, uint32_t height, uint32_t stride, uint8_t componentCount, const void* pTextureData);
 
 void k15_bind_vertex_buffer(software_rasterizer_context_t* pContext, vertex_buffer_handle_t vertexBuffer);
 void k15_bind_texture(software_rasterizer_context_t* pContext, texture_handle_t texture, uint32_t slot);
@@ -167,6 +168,7 @@ struct vertex_buffer_t
 
 struct texture_t
 {
+    char name[256];
     const void* pData;
     uint32_t width;
     uint32_t height;
@@ -198,7 +200,7 @@ struct triangle4f_t
 struct screenspace_triangle2i_t
 {
     vector3f_t      normals[3];
-    vector2f_t      positions[3];
+    vector3f_t      positions[3];
     vector2f_t      texcoords[3];
     bounding_box_t  boundingBox;
 
@@ -274,6 +276,7 @@ struct software_rasterizer_context_t
     clip_vertices_t                             clipVertices;
 
     void*                                       pColorBuffer[MaxColorBuffer];
+    void*                                       pDepthBuffer[MaxColorBuffer];
 
     vertex_buffer_t*                            pBoundVertexBuffer;
     texture_t*                                  boundTextures[DrawCallMaxTextures];
@@ -452,6 +455,17 @@ bool k15_is_in_range_inclusive(T value, T min, T max)
     return value >= min && value <= max;
 }
 
+vector4f_t _k15_vector4f_scale(vector4f_t a, float scale)
+{
+    vector4f_t vector = a;
+    vector.x *= scale;
+    vector.y *= scale;
+    vector.z *= scale;
+    vector.w *= scale;
+
+    return vector;
+}
+
 vector3f_t _k15_vector3f_add(vector3f_t a, vector3f_t b)
 {
     vector3f_t vector;
@@ -491,42 +505,34 @@ vector2f_t k15_create_vector2f(float x, float y)
     return {x, y};
 }
 
-void k15_draw_triangles(void* pColorBuffer, uint32_t colorBufferStride, const dynamic_buffer_t<screenspace_triangle2i_t>* pScreenSpaceTriangleBuffer)
+void k15_draw_triangles(void* pColorBuffer, void* pDepthBuffer, uint32_t colorBufferStride, const dynamic_buffer_t<screenspace_triangle2i_t>* pScreenSpaceTriangleBuffer)
 {
     uint32_t* pColorBufferContent = (uint32_t*)pColorBuffer;
+    float* pDepthBufferContent = (float*)pDepthBuffer;
     for(uint32_t triangleIndex = 0; triangleIndex < pScreenSpaceTriangleBuffer->count; ++triangleIndex)
     {
         const screenspace_triangle2i_t* pTriangle = pScreenSpaceTriangleBuffer->pData + triangleIndex;
 
 #if 0
-        _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->points[0], &pTriangle->points[1], 0xFFFFFFFF);
-        _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->points[1], &pTriangle->points[2], 0xFFFFFFFF);
-        _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->points[2], &pTriangle->points[0], 0xFFFFFFFF);
-        
-        const vector2f_t a = k15_create_vector2f((float)pTriangle->boundingBox.x1, (float)pTriangle->boundingBox.y1);
-        const vector2f_t b = k15_create_vector2f((float)pTriangle->boundingBox.x2, (float)pTriangle->boundingBox.y1);
-        const vector2f_t c = k15_create_vector2f((float)pTriangle->boundingBox.x1, (float)pTriangle->boundingBox.y2);
-        const vector2f_t d = k15_create_vector2f((float)pTriangle->boundingBox.x2, (float)pTriangle->boundingBox.y2);
-       
+        vector2f_t a = k15_create_vector2f(pTriangle->positions[0].x, pTriangle->positions[0].y);
+        vector2f_t b = k15_create_vector2f(pTriangle->positions[1].x, pTriangle->positions[1].y);
+        vector2f_t c = k15_create_vector2f(pTriangle->positions[2].x, pTriangle->positions[2].y);
         _k15_draw_line(pColorBuffer, colorBufferStride, &a, &b, 0xFFFFFFFF);
-        _k15_draw_line(pColorBuffer, colorBufferStride, &b, &d, 0xFFFFFFFF);
-        _k15_draw_line(pColorBuffer, colorBufferStride, &d, &c, 0xFFFFFFFF);
+        _k15_draw_line(pColorBuffer, colorBufferStride, &b, &c, 0xFFFFFFFF);
         _k15_draw_line(pColorBuffer, colorBufferStride, &c, &a, 0xFFFFFFFF);
-#elif 1
-
-#if 0
-        _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->positions[0], &pTriangle->positions[1], 0xFFFFFFFF);
-        _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->positions[1], &pTriangle->positions[2], 0xFFFFFFFF);
-        _k15_draw_line(pColorBuffer, colorBufferStride, &pTriangle->positions[2], &pTriangle->positions[0], 0xFFFFFFFF);
-#endif
+#else
         for(uint32_t y = pTriangle->boundingBox.y1; y < pTriangle->boundingBox.y2; ++y)
         {
             for(uint32_t x = pTriangle->boundingBox.x1; x < pTriangle->boundingBox.x2; ++x)
             {   
+                if( x == 162 && y == 139 )
+                {
+                    BreakpointHook();
+                }
                 const vector2f_t pixel = {(float)x, (float)y};
-                const vector2f_t v0 = _k15_vector2f_sub(pTriangle->positions[1], pTriangle->positions[0]);
-                const vector2f_t v1 = _k15_vector2f_sub(pTriangle->positions[2], pTriangle->positions[0]);
-                const vector2f_t v2 = _k15_vector2f_sub(pixel, pTriangle->positions[0]);
+                const vector2f_t v0 = _k15_vector2f_sub(k15_create_vector2f(pTriangle->positions[1].x, pTriangle->positions[1].y), k15_create_vector2f(pTriangle->positions[0].x, pTriangle->positions[0].y));
+                const vector2f_t v1 = _k15_vector2f_sub(k15_create_vector2f(pTriangle->positions[2].x, pTriangle->positions[2].y), k15_create_vector2f(pTriangle->positions[0].x, pTriangle->positions[0].y));
+                const vector2f_t v2 = _k15_vector2f_sub(pixel, k15_create_vector2f(pTriangle->positions[0].x, pTriangle->positions[0].y));
 
                 const float d00 = _k15_vector2f_dot(v0, v0);
                 const float d01 = _k15_vector2f_dot(v0, v1);
@@ -544,18 +550,27 @@ void k15_draw_triangles(void* pColorBuffer, uint32_t colorBufferStride, const dy
                 {
                     continue;
                 }
+                
+                const float bary_z = pTriangle->positions[0].z * u + pTriangle->positions[1].z * v + pTriangle->positions[2].z * w;
+                const uint32_t depthBufferIndex = x + y * colorBufferStride;
+                if( pDepthBufferContent[depthBufferIndex] > bary_z )
+                {
+                    continue;
+                }
+
+                pDepthBufferContent[depthBufferIndex] = bary_z;
 
                 const vector2f_t bary_uv = { pTriangle->texcoords[0].x * u + pTriangle->texcoords[1].x * v + pTriangle->texcoords[2].x * w,
                     pTriangle->texcoords[0].y * u + pTriangle->texcoords[1].y * v + pTriangle->texcoords[2].y * w };
 
                 texture_t* pTexture = pTriangle->pDrawCall->textures[0];
                 uint32_t imageX = (uint32_t)(bary_uv.x * pTexture->width);
-                uint32_t imageY = (uint32_t)(bary_uv.y * pTexture->height);
+                uint32_t imageY = pTexture->height - (uint32_t)(bary_uv.y * pTexture->height);
 
                 const uint8_t* pTextureData = (const uint8_t*)pTexture->pData;
-                uint8_t red    = pTextureData[(imageX + imageY * pTexture->stride) * 3 + 0];
-                uint8_t green  = pTextureData[(imageX + imageY * pTexture->stride) * 3 + 1];
-                uint8_t blue   = pTextureData[(imageX + imageY * pTexture->stride) * 3 + 2];
+                uint8_t red    = pTextureData[(imageX + imageY * pTexture->stride) * pTexture->componentCount + 0];
+                uint8_t green  = pTextureData[(imageX + imageY * pTexture->stride) * pTexture->componentCount + 1];
+                uint8_t blue   = pTextureData[(imageX + imageY * pTexture->stride) * pTexture->componentCount + 2];
 
                 uint32_t color = 0xFF000000 | red << 16 | green << 8 | blue;
                 uint32_t pixelIndex = (uint32_t)pixel.x + (uint32_t)pixel.y * colorBufferStride;
@@ -656,6 +671,15 @@ T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, T value)
 }
 
 template<typename T>
+void _k15_destroy_dynamic_buffer(dynamic_buffer_t<T>* pBuffer)
+{
+    free(pBuffer->pData);
+    pBuffer->pData = nullptr;
+    pBuffer->capacity = 0;
+    pBuffer->count = 0;
+}
+
+template<typename T>
 T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer, uint32_t elementCount)
 {
     const uint32_t bufferCapacity = pStaticBuffer->capacity;
@@ -717,6 +741,11 @@ bool k15_create_software_rasterizer_context(software_rasterizer_context_t** pOut
     for(uint8_t colorBufferIndex = 0; colorBufferIndex < pParameters->colorBufferCount; ++colorBufferIndex)
     {
         pContext->pColorBuffer[colorBufferIndex] = pParameters->pColorBuffers[colorBufferIndex];
+    }
+
+    for(uint8_t colorBufferIndex = 0; colorBufferIndex < pParameters->colorBufferCount; ++colorBufferIndex)
+    {
+        pContext->pDepthBuffer[colorBufferIndex] = pParameters->pDepthBuffers[colorBufferIndex];
     }
 
     pContext->colorBufferCount = pParameters->colorBufferCount;
@@ -942,29 +971,34 @@ void k15_cull_outside_frustum_triangles(dynamic_buffer_t<triangle4f_t>* restrict
                 const vector4f_t ac = _k15_vector4f_sub(pTriangle->vertices[2].position, pTriangle->vertices[0].position);
                 const vector4f_t sign = _k15_vector4f_cross(ab, ac);
 
-                const bool isTriangleBackfacing = sign.z < 0.0f;
+                const bool isTriangleBackfacing = sign.z > 0.0f;
                 if(isTriangleBackfacing)
                 {
                     continue;
                 }
             }
 
+#if 1
+            _k15_dynamic_buffer_push_back(pCulledTriangleBuffer, *pTriangle);
+#else
             triangle4f_t* pVisibleTriangle = _k15_static_buffer_push_back(&visibleTriangles, 1u);
             if(pVisibleTriangle == nullptr)
             {
-                if(!_k15_push_static_buffer_to_dynamic_buffer(&visibleTriangles, pCulledTriangleBuffer))
-                {
-                    //FK: Out of memory
-                }
+                //if(!_k15_push_static_buffer_to_dynamic_buffer(&visibleTriangles, pCulledTriangleBuffer))
+                //{
+                //    //FK: Out of memory
+                //}
 
                 visibleTriangles.count = 0;
                 pVisibleTriangle = _k15_static_buffer_push_back(&visibleTriangles, 1u);
             }
 
             memcpy(pVisibleTriangle, pTriangle, sizeof(triangle4f_t));
+#endif
         }
     }
 
+#if 0
     if(visibleTriangles.count > 0)
     {
         if(!_k15_push_static_buffer_to_dynamic_buffer(&visibleTriangles, pCulledTriangleBuffer))
@@ -972,6 +1006,7 @@ void k15_cull_outside_frustum_triangles(dynamic_buffer_t<triangle4f_t>* restrict
             //FK: Out of memory
         }
     }
+#endif
 }
 
 void k15_cull_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pTriangleBuffer, dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisibleTriangleBuffer, bool backFaceCullingEnabeld)
@@ -1123,7 +1158,9 @@ clipped_vertex_t _k15_create_clipped_vertex(const vertex_t* pVertex, uint32_t tr
 void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisibleTriangles, dynamic_buffer_t<triangle4f_t>* pClippedTriangles)
 {
     const uint32_t triangleCount = pVisibleTriangles->count;
-    static_buffer_t<clipped_vertex_t, 128u> localClippedVertices;
+    //static_buffer_t<clipped_vertex_t, 128u> localClippedVertices;
+    dynamic_buffer_t<clipped_vertex_t> localClippedVertices;
+    _k15_create_dynamic_buffer(&localClippedVertices, 256);
 
     for(uint32_t triangleIndex = 0; triangleIndex < triangleCount; ++triangleIndex)
     {
@@ -1149,14 +1186,16 @@ void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisib
             {
                 if( !currentVertexClipped )
                 {
-                    _k15_static_buffer_push_back(&localClippedVertices, _k15_create_clipped_vertex(&edgeVertices[0], triangleIndex, pCurrentTriangle->pDrawCall));
+                    //_k15_static_buffer_push_back(&localClippedVertices, _k15_create_clipped_vertex(&edgeVertices[0], triangleIndex, pCurrentTriangle->pDrawCall));
+                    _k15_dynamic_buffer_push_back(&localClippedVertices, _k15_create_clipped_vertex(&edgeVertices[0], triangleIndex, pCurrentTriangle->pDrawCall));
                 }
 
                 currentVertexClipped = false;
 
                 if( clipped )
                 {
-                    _k15_static_buffer_push_back(&localClippedVertices, _k15_create_clipped_vertex(&intersectionVertex, triangleIndex, pCurrentTriangle->pDrawCall));
+                    //_k15_static_buffer_push_back(&localClippedVertices, _k15_create_clipped_vertex(&intersectionVertex, triangleIndex, pCurrentTriangle->pDrawCall));
+                    _k15_dynamic_buffer_push_back(&localClippedVertices, _k15_create_clipped_vertex(&intersectionVertex, triangleIndex, pCurrentTriangle->pDrawCall));
                     clipped = false;
                 }
                 continue;
@@ -1196,7 +1235,7 @@ void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisib
                 }
                 else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Far )
                 {
-                    const float t = ( edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.y ) / ( ( edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.y ) - ( edgeVertices[!vertexIndex].position.w - edgeVertices[!vertexIndex].position.y ) );
+                    const float t = ( -edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.z ) / ( ( -edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.z ) - ( -edgeVertices[!vertexIndex].position.w - edgeVertices[!vertexIndex].position.z ) );
                     intersectionVertex = k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
                 }
                 else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Near )
@@ -1218,7 +1257,8 @@ void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisib
         return;
     }
 
-    clipped_vertex_t* pTriangleVertices = localClippedVertices.pStaticData;
+    //clipped_vertex_t* pTriangleVertices = localClippedVertices.pStaticData;
+    clipped_vertex_t* pTriangleVertices = localClippedVertices.pData;
     for(uint32_t clippedVertexIndex = 0; clippedVertexIndex < localClippedVertices.count;)
     {
         const uint32_t remainingVertexCount = localClippedVertices.count - clippedVertexIndex;
@@ -1232,9 +1272,9 @@ void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisib
            pTriangleVertices[clippedVertexIndex + 4].triangleIndex == localTriangleIndex)
         {
             triangle4f_t* pTriangles = _k15_dynamic_buffer_push_back(pClippedTriangles, 3u);
-            pTriangles[0] = {pTriangleVertices[clippedVertexIndex + 0], pTriangleVertices[clippedVertexIndex + 1], pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[0].pDrawCall};
-            pTriangles[1] = {pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[clippedVertexIndex + 3], pTriangleVertices[clippedVertexIndex + 4], pTriangleVertices[0].pDrawCall};
-            pTriangles[2] = {pTriangleVertices[clippedVertexIndex + 4], pTriangleVertices[clippedVertexIndex + 0], pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[0].pDrawCall};
+            pTriangles[0] = {pTriangleVertices[clippedVertexIndex + 0], pTriangleVertices[clippedVertexIndex + 1], pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[clippedVertexIndex].pDrawCall};
+            pTriangles[1] = {pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[clippedVertexIndex + 3], pTriangleVertices[clippedVertexIndex + 4], pTriangleVertices[clippedVertexIndex].pDrawCall};
+            pTriangles[2] = {pTriangleVertices[clippedVertexIndex + 4], pTriangleVertices[clippedVertexIndex + 0], pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[clippedVertexIndex].pDrawCall};
             
             clippedVertexIndex += 5;
         }
@@ -1244,15 +1284,15 @@ void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisib
            pTriangleVertices[clippedVertexIndex + 3].triangleIndex == localTriangleIndex)
         {
             triangle4f_t* pTriangles = _k15_dynamic_buffer_push_back(pClippedTriangles, 2u);
-            pTriangles[0] = {pTriangleVertices[clippedVertexIndex + 0], pTriangleVertices[clippedVertexIndex + 1], pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[0].pDrawCall};
-            pTriangles[1] = {pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[clippedVertexIndex + 3], pTriangleVertices[clippedVertexIndex + 0], pTriangleVertices[0].pDrawCall};
+            pTriangles[0] = {pTriangleVertices[clippedVertexIndex + 0], pTriangleVertices[clippedVertexIndex + 1], pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[clippedVertexIndex].pDrawCall};
+            pTriangles[1] = {pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[clippedVertexIndex + 3], pTriangleVertices[clippedVertexIndex + 0], pTriangleVertices[clippedVertexIndex].pDrawCall};
 
             clippedVertexIndex += 4;
         }
         else if(pTriangleVertices[clippedVertexIndex + 1].triangleIndex == localTriangleIndex && pTriangleVertices[clippedVertexIndex + 2].triangleIndex == localTriangleIndex)
         {
             triangle4f_t* pTriangle = _k15_dynamic_buffer_push_back(pClippedTriangles, 1u);
-            pTriangle[0] = {pTriangleVertices[clippedVertexIndex + 0], pTriangleVertices[clippedVertexIndex + 1], pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[0].pDrawCall};
+            pTriangle[0] = {pTriangleVertices[clippedVertexIndex + 0], pTriangleVertices[clippedVertexIndex + 1], pTriangleVertices[clippedVertexIndex + 2], pTriangleVertices[clippedVertexIndex].pDrawCall};
 
             clippedVertexIndex += 3;
         }
@@ -1261,6 +1301,8 @@ void k15_clip_triangles(dynamic_buffer_t<triangle4f_t>* restrict_modifier pVisib
             RuntimeAssert(false);
         }
     }
+
+    _k15_destroy_dynamic_buffer(&localClippedVertices);
 }
 
 void k15_project_triangles_into_screenspace(dynamic_buffer_t<triangle4f_t>* restrict_modifier pClippedTriangleBuffer, dynamic_buffer_t<screenspace_triangle2i_t>* restrict_modifier pScreenspaceTriangleBuffer, uint32_t backBufferWidth, uint32_t backBufferHeight)
@@ -1277,12 +1319,15 @@ void k15_project_triangles_into_screenspace(dynamic_buffer_t<triangle4f_t>* rest
 
         pScreenspaceTriangle->positions[0].x = (((1.0f + pTriangle->vertices[0].position.x / pTriangle->vertices[0].position.w) / 2.0f) * width);
         pScreenspaceTriangle->positions[0].y = (((1.0f + pTriangle->vertices[0].position.y / pTriangle->vertices[0].position.w) / 2.0f) * height);
+        pScreenspaceTriangle->positions[0].z = pTriangle->vertices[0].position.z / pTriangle->vertices[0].position.w;
 
         pScreenspaceTriangle->positions[1].x = (((1.0f + pTriangle->vertices[1].position.x / pTriangle->vertices[1].position.w) / 2.0f) * width);
         pScreenspaceTriangle->positions[1].y = (((1.0f + pTriangle->vertices[1].position.y / pTriangle->vertices[1].position.w) / 2.0f) * height);
+        pScreenspaceTriangle->positions[1].z = pTriangle->vertices[1].position.z / pTriangle->vertices[1].position.w;
 
         pScreenspaceTriangle->positions[2].x = (((1.0f + pTriangle->vertices[2].position.x / pTriangle->vertices[2].position.w) / 2.0f) * width);
         pScreenspaceTriangle->positions[2].y = (((1.0f + pTriangle->vertices[2].position.y / pTriangle->vertices[2].position.w) / 2.0f) * height);
+        pScreenspaceTriangle->positions[2].z = pTriangle->vertices[2].position.z / pTriangle->vertices[2].position.w;
 
         pScreenspaceTriangle->normals[0] = pTriangle->vertices[0].normal;
         pScreenspaceTriangle->normals[1] = pTriangle->vertices[1].normal;
@@ -1296,6 +1341,11 @@ void k15_project_triangles_into_screenspace(dynamic_buffer_t<triangle4f_t>* rest
         pScreenspaceTriangle->boundingBox.y1 = (uint32_t)(get_min(pScreenspaceTriangle->positions[0].y, get_min(pScreenspaceTriangle->positions[1].y, pScreenspaceTriangle->positions[2].y)));
         pScreenspaceTriangle->boundingBox.y2 = (uint32_t)(get_max(pScreenspaceTriangle->positions[0].y, get_max(pScreenspaceTriangle->positions[1].y, pScreenspaceTriangle->positions[2].y)));
         pScreenspaceTriangle->boundingBox.x2 = (uint32_t)(get_max(pScreenspaceTriangle->positions[0].x, get_max(pScreenspaceTriangle->positions[1].x, pScreenspaceTriangle->positions[2].x)));
+
+        pScreenspaceTriangle->boundingBox.x1 -= 1;
+        pScreenspaceTriangle->boundingBox.y1 -= 1;
+        pScreenspaceTriangle->boundingBox.y2 += 1;
+        pScreenspaceTriangle->boundingBox.x2 += 1;
 
         pScreenspaceTriangle->pDrawCall = pTriangle->pDrawCall;
     }
@@ -1402,13 +1452,15 @@ void k15_draw_frame(software_rasterizer_context_t* pContext)
     k15_cull_triangles(&pContext->triangles, &pContext->visibleTriangles, pContext->settings.backFaceCullingEnabled);
     k15_clip_triangles(&pContext->visibleTriangles, &pContext->clippedTriangles);
     k15_project_triangles_into_screenspace(&pContext->clippedTriangles, &pContext->screenSpaceTriangles, pContext->backBufferWidth, pContext->backBufferHeight);
-    k15_draw_triangles(pContext->pColorBuffer[pContext->currentColorBufferIndex], pContext->backBufferStride, &pContext->screenSpaceTriangles);
+    k15_draw_triangles(pContext->pColorBuffer[pContext->currentColorBufferIndex], pContext->pDepthBuffer[pContext->currentColorBufferIndex], pContext->backBufferStride, &pContext->screenSpaceTriangles);
 
     pContext->triangles.count = 0;
     pContext->visibleTriangles.count = 0;
     pContext->clippedTriangles.count = 0;
     pContext->screenSpaceTriangles.count = 0;
     pContext->drawCalls.count = 0;
+
+    memset(pContext->pDepthBuffer[pContext->currentColorBufferIndex], 0, pContext->backBufferWidth * pContext->backBufferHeight * sizeof(float));
 }
 
 void k15_change_color_buffers(software_rasterizer_context_t* pContext, void** restrict_modifier pColorBuffers, uint8_t colorBufferCount, uint32_t widthInPixels, uint32_t heightInPixels, uint32_t strideInBytes)
@@ -1453,7 +1505,7 @@ vertex_buffer_handle_t k15_create_vertex_buffer(software_rasterizer_context_t* p
     return handle;
 }
 
-texture_handle_t k15_create_texture(software_rasterizer_context_t* pContext, uint32_t width, uint32_t height, uint32_t stride, uint8_t componentCount, const void* pTextureData)
+texture_handle_t k15_create_texture(software_rasterizer_context_t* pContext, const char* pName, uint32_t width, uint32_t height, uint32_t stride, uint8_t componentCount, const void* pTextureData)
 {
     RuntimeAssert(pContext != nullptr);
     RuntimeAssert(pTextureData != nullptr);
@@ -1470,6 +1522,7 @@ texture_handle_t k15_create_texture(software_rasterizer_context_t* pContext, uin
         return k15_invalid_texture_handle;
     }
 
+    strcpy(pTexture->name, pName);
     pTexture->width             = width;
     pTexture->height            = height;
     pTexture->stride            = stride;

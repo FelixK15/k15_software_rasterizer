@@ -11,15 +11,36 @@
                 "options": {
                     "cwd": "win32"
                 },
-                "args": ["debug"],
+                "args": [
+                    "debug"
+                ],
                 "problemMatcher": [
                     "$msCompile"
                 ]
             },
-      
             "group": {
                 "kind": "build",
                 "isDefault": true
+            }
+        },
+        {
+            "label": "Build Software Rasterizer (Release)",
+            "type": "shell",
+            "windows": {
+                "command": "build.bat",
+                "options": {
+                    "cwd": "win32"
+                },
+                "args": [
+                    "release"
+                ],
+                "problemMatcher": [
+                    "$msCompile"
+                ]
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": false
             }
         },
         {
@@ -30,12 +51,13 @@
                 "options": {
                     "cwd": "win32"
                 },
-                "args": ["debug"],
+                "args": [
+                    "debug"
+                ],
                 "problemMatcher": [
                     "$msCompile"
                 ]
             },
-      
             "group": {
                 "kind": "build",
                 "isDefault": false

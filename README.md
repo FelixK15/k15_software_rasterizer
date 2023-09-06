@@ -2,4 +2,4 @@
 
 This is a super simple 3d software renderer which is just a toy project to get to know the backgrounds of 3d rendering.
 
-![animation.gif](animation.gif)
+![preview.png](preview.png)
