@@ -1,6 +1,5 @@
-*.exe
-*.ilk
-*.pdb
-*.obj
+win32/build
+win32/*.obj
+win32/*.pdb
 .cl_path.txt
 *.cached_path
