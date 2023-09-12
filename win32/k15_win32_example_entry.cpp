@@ -24,6 +24,25 @@ void allocateDebugConsole()
 	freopen("CONOUT$", "w", stdout);
 }
 
+struct light
+{
+	vector4f_t position;
+	vector4f_t color;
+	float radius;
+};
+
+struct shaderUniformData
+{
+	light lights[16];
+	uint8_t lightCount;
+
+	vector4f_t viewPos;
+	vector4f_t ambientColor;
+	texture_handle_t texture;
+	matrix4x4f_t viewProjMatrix;
+	matrix4x4f_t modelMatrix;
+};
+
 software_rasterizer_context_t* pContext = nullptr;
 uint32_t* pBackBufferPixels = 0;
 float* pDepthBufferPixels = 0;
@@ -36,8 +55,15 @@ int virtualScreenHeight = 240;
 int screenWidth = virtualScreenWidth*3;
 int screenHeight = virtualScreenHeight*3;
 
-vector3f_t cameraPos = {0.0f, 0.0f, 1.5f};
-vector3f_t cameraVelocity = {};
+vector4f_t cameraPos = {0.0f, 0.0f, 1.5f, 1.0f};
+vector4f_t cameraVelocity = {};
+
+matrix4x4f_t projectionMatrix;
+shaderUniformData shaderData;
+
+vertex_shader_handle_t vertexShaderHandle;
+pixel_shader_handle_t pixelShaderHandle;
+uniform_buffer_handle_t uniformBufferHandle;
 
 constexpr vector4f_t test_cube_vertices[] = {
 	{-0.5f, -0.5f, -0.5f, 1.0f },
@@ -264,7 +290,7 @@ void fillVertexArrays(const char* pFileStart, const char* pFileEnd, vector4f_t* 
 		if( pFileRunning[0] == 'v' && pFileRunning[1] == ' ' )
 		{
 			sscanf(pFileRunning + 3, "%f %f %f\n", &pPositions[positionIndex].x, &pPositions[positionIndex].y, &pPositions[positionIndex].z );
-			pPositions[positionIndex] = _k15_vector4f_scale(pPositions[positionIndex], scaleFactor);
+			pPositions[positionIndex] = k15_vector4f_scale(pPositions[positionIndex], scaleFactor);
 			pPositions[positionIndex].w = 1.0f;
 
 			++positionIndex;
@@ -358,9 +384,20 @@ bool assembleVerticesForMaterial(const char* pMaterialName, uint32_t* pOutVertex
 			pVertices[vertexIndex + 1].position = pPositions[positionIndex[1] - 1u];
 			pVertices[vertexIndex + 2].position = pPositions[positionIndex[2] - 1u];
 
-			pVertices[vertexIndex + 0].normal = pNormals[normalIndex[0] - 1u];
-			pVertices[vertexIndex + 1].normal = pNormals[normalIndex[1] - 1u];
-			pVertices[vertexIndex + 2].normal = pNormals[normalIndex[2] - 1u];
+			pVertices[vertexIndex + 0].normal.x = pNormals[normalIndex[0] - 1u].x;
+			pVertices[vertexIndex + 0].normal.y = pNormals[normalIndex[0] - 1u].y;
+			pVertices[vertexIndex + 0].normal.z = pNormals[normalIndex[0] - 1u].z;
+			pVertices[vertexIndex + 0].normal.w = 0.0f;
+
+			pVertices[vertexIndex + 1].normal.x = pNormals[normalIndex[1] - 1u].x;
+			pVertices[vertexIndex + 1].normal.y = pNormals[normalIndex[1] - 1u].y;
+			pVertices[vertexIndex + 1].normal.z = pNormals[normalIndex[1] - 1u].z;
+			pVertices[vertexIndex + 1].normal.w = 0.0f;
+
+			pVertices[vertexIndex + 2].normal.x = pNormals[normalIndex[2] - 1u].x;
+			pVertices[vertexIndex + 2].normal.y = pNormals[normalIndex[2] - 1u].y;
+			pVertices[vertexIndex + 2].normal.z = pNormals[normalIndex[2] - 1u].z;
+			pVertices[vertexIndex + 2].normal.w = 0.0f;
 
 			pVertices[vertexIndex + 0].texcoord = pTexCoords[texCoordIndex[0] - 1u];
 			pVertices[vertexIndex + 1].texcoord = pTexCoords[texCoordIndex[1] - 1u];
@@ -580,7 +617,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.y = 0.001f;
+			cameraVelocity.y = 0.005f;
 		}
 		else if(isKeyUp)
 		{
@@ -592,7 +629,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.y = -0.001f;
+			cameraVelocity.y = -0.005f;
 		}
 		else if(isKeyUp)
 		{
@@ -604,7 +641,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.x = 0.0005f;
+			cameraVelocity.x = 0.005f;
 		}
 		else if(isKeyUp)
 		{
@@ -616,7 +653,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.x = -0.0005f;
+			cameraVelocity.x = -0.005f;
 		}
 		else if(isKeyUp)
 		{
@@ -628,7 +665,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.z = -0.001f;
+			cameraVelocity.z = -0.005f;
 		}
 		else if(isKeyUp)
 		{
@@ -640,7 +677,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.z = 0.001f;
+			cameraVelocity.z = 0.005f;
 		}
 		else if(isKeyUp)
 		{
@@ -661,8 +698,10 @@ void K15_MouseButtonInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 
 void K15_MouseMove(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 {
+	#if 0
 	mouseX = (lparam & 0xFFFF) / 3;
 	mouseY = ((lparam & 0xFFFF0000) >> 16) / 3;
+	#endif
 }
 
 void K15_MouseWheel(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -789,60 +828,93 @@ uint32_t getTimeInMilliseconds(LARGE_INTEGER PerformanceFrequency)
 	return (uint32_t)(appTime.QuadPart / PerformanceFrequency.QuadPart);
 }
 
+void vertexShader(vertex_shader_input_t* pInOutVertices, uint32_t vertexCount, const void* pUniformData)
+{
+	shaderUniformData* pShaderData = (shaderUniformData*)pUniformData;
+	matrix4x4f_t positionMatrix     = _k15_mul_matrix4x4f(&pShaderData->viewProjMatrix, &pShaderData->modelMatrix);
+    //matrix4x4f_t invPositionMatrix  = _k15_inverse_matrix4x4f(&positionMatrix);
+    matrix4x4f_t normalMatrix       = positionMatrix;
+    
+	_k15_mul_multiple_vector4_matrix44(pInOutVertices->positions, &positionMatrix, vertexCount);
+	_k15_mul_multiple_vector4_matrix44(pInOutVertices->normals, &normalMatrix, vertexCount);
+}
+
+void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const void* pUniformData)
+{
+	shaderUniformData* pShaderData = (shaderUniformData*)pUniformData;
+	for( uint32_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex )
+	{
+		float rgb[3];
+		k15_sample_texture_nearest_neighbor(rgb, pShaderData->texture, pInOutPixels->vertexAttributes[pixelIndex].texcoord);
+		
+		vector4f_t color = k15_create_vector4f(rgb[0], rgb[1], rgb[2], 1.0f);
+		color = k15_vector4f_hadamard(color, pShaderData->ambientColor);
+
+		for( uint32_t lightIndex = 1; lightIndex < pShaderData->lightCount; ++lightIndex )
+		{
+			const float lightRadiusSquared = pShaderData->lights[lightIndex].radius *  pShaderData->lights[lightIndex].radius;
+			const vector4f_t pixelToLight = k15_vector4f_sub(pShaderData->lights[lightIndex].position, pInOutPixels->vertexAttributes[pixelIndex].position);
+			const vector4f_t pixelToLightNormalized = k15_vector4f_normalize(pixelToLight);
+			const float lightAngle = k15_vector4f_dot(pixelToLightNormalized, pInOutPixels->vertexAttributes[pixelIndex].normal);
+			const float pixelToLightSquared = k15_vector4f_length_squared(pixelToLight);
+
+			if( pixelToLightSquared > lightRadiusSquared )
+			{
+				continue;
+			}
+
+			const float distanceNormalized = 1.0f - (pixelToLightSquared / lightRadiusSquared);
+			color = k15_vector4f_add(color, k15_vector4f_scale(pShaderData->lights[lightIndex].color, distanceNormalized * lightAngle));
+		}
+
+		pInOutPixels->color[pixelIndex].r = color.x;
+		pInOutPixels->color[pixelIndex].g = color.y;
+		pInOutPixels->color[pixelIndex].b = color.z;
+	}
+}
+
 loaded_model_t loadedModel = {};
 bool setup()
 {
 	pDepthBufferPixels = (float*)malloc(virtualScreenWidth * virtualScreenHeight * sizeof(float));
 	memset(pDepthBufferPixels, 0, virtualScreenWidth * virtualScreenHeight * sizeof(float));
 
-	software_rasterizer_context_init_parameters_t parameters;
-	parameters.backBufferWidth 	= virtualScreenWidth;
-	parameters.backBufferHeight = virtualScreenHeight;
-	parameters.backBufferStride = virtualScreenWidth;
-	parameters.pColorBuffers[0]	= pBackBufferPixels;
-	parameters.pDepthBuffers[0] = pDepthBufferPixels;
-	parameters.colorBufferCount = 1;
-	
+	triangle_t triangle = {};
+	triangle.vertices[0].position = k15_create_vector4f(1.0f, 0.0f, 0.0f, 1.0f);
+	triangle.vertices[1].position = k15_create_vector4f(-1.0f, 0.0f, 0.0f, 1.0f);
+	triangle.vertices[2].position = k15_create_vector4f(0.0f, 1.0f, 0.0f, 1.0f);
+
+	const vector4f_t ab = k15_vector4f_sub(triangle.vertices[0].position, triangle.vertices[1].position);
+	const vector4f_t ac = k15_vector4f_sub(triangle.vertices[0].position, triangle.vertices[2].position);
+	const vector4f_t cross = k15_vector4f_cross(ab, ac);
+
+	software_rasterizer_context_init_parameters_t parameters = k15_create_default_software_rasterizer_context_parameters(virtualScreenWidth, virtualScreenHeight, (void**)&pBackBufferPixels, (void**)&pDepthBufferPixels, 1u);
+	parameters.redShift 	= 16;
+	parameters.greenShift 	= 8;
+	parameters.blueShift 	= 0;
+
 	if(!k15_create_software_rasterizer_context(&pContext, &parameters))
 	{
 		printf("Couldn't create software rendering context.\n");
 		return false;
 	}
 
-#if 0
-	const vector4f_t* pGeometry = test_cube_vertices;
-	vertexCount = sizeof(test_cube_vertices)/sizeof(vector4f_t);
-#elif 0
-	const vector4f_t* pGeometry = test_triangle_vertices;
-	const vector2f_t* pUVs = test_triangle_uvs;
-	vertexCount = sizeof(test_triangle_vertices)/sizeof(vector4f_t);
-#elif 0
-	const vector4f_t* pGeometry = test_quad_vertices;
-	const vector2f_t* pUVs = test_quad_uvs;
-	vertexCount = sizeof(test_quad_vertices)/sizeof(vector4f_t);
-#endif
+	k15_create_projection_matrix(&projectionMatrix, virtualScreenWidth, virtualScreenHeight, 1.0f, 10.f, 90.f);
 
-#if 0
-	vertex_t* pVertices = (vertex_t*)malloc(sizeof(vertex_t) * vertexCount);
-	for( uint32_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex )
-	{
-		pVertices[vertexIndex].position = pGeometry[vertexIndex];
-		pVertices[vertexIndex].normal 	= k15_create_vector3f(1.0f, 0.0f, 0.0f);
-		pVertices[vertexIndex].texcoord = pUVs[vertexIndex];
-	}
+	vertexShaderHandle = k15_create_vertex_shader(pContext, vertexShader);
+	pixelShaderHandle = k15_create_pixel_shader(pContext, pixelShader);
+	uniformBufferHandle = k15_create_uniform_buffer(pContext, sizeof(shaderData));
 
-	vertexBuffer = k15_create_vertex_buffer( pContext, pVertices, vertexCount );
-	if(!k15_is_valid_vertex_buffer(vertexBuffer))
-	{
-		return false;
-	}
+	shaderData.lightCount = 2u;
+	shaderData.lights[0].color = k15_create_vector4f(1.0f, 0.0f, 0.0f, 0.0f);
+	shaderData.lights[0].position = k15_create_vector4f(0.0f, 0.0f, 1.0f, 1.0f);
+	shaderData.lights[0].radius = 2.0f;
 
-	texture = k15_create_texture( pContext, imageWidth, imageHeight, imageWidth, imageComponentCount, pImage );
-	if(!k15_is_valid_texture(texture))
-	{
-		return false;
-	}
-#endif
+	shaderData.lights[1].color = k15_create_vector4f(1.0f, 0.0f, 1.0f, 0.0f);
+	shaderData.lights[1].position = k15_create_vector4f(0.0f, 1.0f, 0.0f, 1.0f);
+	shaderData.lights[1].radius = 1.0f;
+
+	shaderData.ambientColor = k15_create_vector4f(0.1f, 0.1f, 0.1f, 1.0f);
 
 	return loadModel(pContext, &loadedModel, "crashbandicoot.obj", "crashbandicoot.mtl", 0.005f);
 }
@@ -858,9 +930,12 @@ void drawBackBuffer(HDC deviceContext)
 void doFrame(float deltaTimeInMs)
 {
 	static float angle = 0.5f;
-	angle += 0.001f;
+	static bool lightGoLeft = false;
+	static bool lightGoUp = false;
 
-	cameraPos = _k15_vector3f_add(cameraVelocity, cameraPos);
+	angle += 0.005f * deltaTimeInMs;
+
+	cameraPos = k15_vector4f_add(k15_vector4f_scale(cameraVelocity, deltaTimeInMs), cameraPos);
 
 	matrix4x4f_t rotation = {cosf(angle), 	0.0f, 	sinf(angle), 	0.0f,
 							 0.0f, 			-1.0f, 	0.0f, 			0.6f,
@@ -872,13 +947,55 @@ void doFrame(float deltaTimeInMs)
 							   0.0f, 0.0f, 1.0f, -cameraPos.z,
 							   0.0f, 0.0f, 0.0f, 1.0f};
 
-	k15_bind_view_matrix(pContext, &viewMatrix);
-	k15_bind_model_matrix(pContext, &rotation);
 	
+	if(lightGoLeft)
+	{
+		shaderData.lights[0].position.x -= 0.0005f * deltaTimeInMs;
+		if( shaderData.lights[0].position.x < -1.0f )
+		{
+			lightGoLeft = false;
+		}
+	}
+	else
+	{
+		shaderData.lights[0].position.x += 0.0005f * deltaTimeInMs;
+		if( shaderData.lights[0].position.x > 1.0f )
+		{
+			lightGoLeft = true;
+		}
+	}
+
+	if(lightGoUp)
+	{
+		shaderData.lights[1].position.y -= 0.0005f * deltaTimeInMs;
+		if( shaderData.lights[1].position.y < -1.0f )
+		{
+			lightGoUp = false;
+		}
+	}
+	else
+	{
+		shaderData.lights[1].position.y += 0.0005f * deltaTimeInMs;
+		if( shaderData.lights[1].position.y > 1.0f )
+		{
+			lightGoUp = true;
+		}
+	}
+
+	shaderData.modelMatrix = rotation;
+	shaderData.viewProjMatrix = _k15_mul_matrix4x4f(&projectionMatrix, &viewMatrix);
+	shaderData.viewPos = cameraPos;
+
+	k15_bind_vertex_shader(pContext, vertexShaderHandle);
+	k15_bind_pixel_shader(pContext, pixelShaderHandle);
+	k15_bind_uniform_buffer(pContext, uniformBufferHandle);
+
 	for( uint32_t subModelIndex = 0; subModelIndex < loadedModel.subModelCount; ++subModelIndex )
 	{
 		k15_bind_vertex_buffer(pContext, loadedModel.vertexBuffers[subModelIndex]);
 		k15_bind_texture(pContext, loadedModel.textures[subModelIndex], 0u);
+		shaderData.texture = loadedModel.textures[subModelIndex];
+		k15_set_uniform_buffer_data(uniformBufferHandle, &shaderData, sizeof(shaderData), 0u);
 		k15_draw(pContext, loadedModel.vertexCounts[subModelIndex], 0u);
 	}
 
