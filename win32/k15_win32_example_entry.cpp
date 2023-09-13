@@ -39,6 +39,7 @@ struct shaderUniformData
 	vector4f_t viewPos;
 	vector4f_t ambientColor;
 	texture_handle_t texture;
+	texture_handle_t normalMap;
 	matrix4x4f_t viewProjMatrix;
 	matrix4x4f_t modelMatrix;
 };
@@ -49,11 +50,12 @@ float* pDepthBufferPixels = 0;
 BITMAPINFO* pBackBufferBitmapInfo = 0;
 HBITMAP backBufferBitmap = 0;
 
-int virtualScreenWidth = 320;
-int virtualScreenHeight = 240;
+int virtualScreenWidth = 1920;
+int virtualScreenHeight = 1080;
+int screenScaleFactor = 1;
 
-int screenWidth = virtualScreenWidth*3;
-int screenHeight = virtualScreenHeight*3;
+int screenWidth = virtualScreenWidth*screenScaleFactor;
+int screenHeight = virtualScreenHeight*screenScaleFactor;
 
 vector4f_t cameraPos = {0.0f, 0.0f, 1.5f, 1.0f};
 vector4f_t cameraVelocity = {};
@@ -289,7 +291,7 @@ void fillVertexArrays(const char* pFileStart, const char* pFileEnd, vector4f_t* 
 		}
 		if( pFileRunning[0] == 'v' && pFileRunning[1] == ' ' )
 		{
-			sscanf(pFileRunning + 3, "%f %f %f\n", &pPositions[positionIndex].x, &pPositions[positionIndex].y, &pPositions[positionIndex].z );
+			sscanf(pFileRunning + 2, "%f %f %f\n", &pPositions[positionIndex].x, &pPositions[positionIndex].y, &pPositions[positionIndex].z );
 			pPositions[positionIndex] = k15_vector4f_scale(pPositions[positionIndex], scaleFactor);
 			pPositions[positionIndex].w = 1.0f;
 
@@ -300,7 +302,7 @@ void fillVertexArrays(const char* pFileStart, const char* pFileEnd, vector4f_t* 
 		}
 		else if( pFileRunning[0] == 'v' && pFileRunning[1] == 'n' )
 		{
-			sscanf(pFileRunning + 3, "%f %f %f\n", &pNormals[normalIndex].x, &pNormals[normalIndex].y, &pNormals[normalIndex].z );
+			sscanf(pFileRunning + 2, "%f %f %f\n", &pNormals[normalIndex].x, &pNormals[normalIndex].y, &pNormals[normalIndex].z );
 			++normalIndex;
 
 			seekEndOfLine = true;
@@ -308,7 +310,7 @@ void fillVertexArrays(const char* pFileStart, const char* pFileEnd, vector4f_t* 
 		}
 		else if( pFileRunning[0] == 'v' && pFileRunning[1] == 't' )
 		{
-			sscanf(pFileRunning + 3, "%f %f 0.0000\n", &pTexCoords[texCoordIndex].x, &pTexCoords[texCoordIndex].y );
+			sscanf(pFileRunning + 2, "%f %f 0.0000\n", &pTexCoords[texCoordIndex].x, &pTexCoords[texCoordIndex].y );
 			++texCoordIndex;
 
 			seekEndOfLine = true;
@@ -358,7 +360,7 @@ bool assembleVerticesForMaterial(const char* pMaterialName, uint32_t* pOutVertex
 	uint32_t vertexIndex = 0;
 	const char* pFileRunning = pFileStart;
 	bool seekLineEnd = false;
-	bool matchingMaterial = false;
+	bool matchingMaterial = pMaterialName == nullptr ? true : false;
 	while( pFileRunning != pFileEnd )
 	{
 		if( seekLineEnd )
@@ -431,6 +433,12 @@ struct wavefront_material_t
 	char materialTexturePath[64];
 };
 
+struct scn_material_t
+{
+	char baseColorMapPath[128];
+	char normalMapPath[128];
+};
+
 vertex_buffer_handle_t extractVerticesForMaterialFromWavefrontModel(software_rasterizer_context_t* restrict_modifier pContext, const char* restrict_modifier pModelFilePath, wavefront_material_t* restrict_modifier pMaterial, uint32_t* restrict_modifier pOutVertexCount, float scaleFactor)
 {
 	Win32FileMapping modelFileMapping;
@@ -458,7 +466,7 @@ vertex_buffer_handle_t extractVerticesForMaterialFromWavefrontModel(software_ras
 	}
 
 	uint32_t vertexCountForThisMaterial = 0;
-	assembleVerticesForMaterial(pMaterial->materialName, &vertexCountForThisMaterial, pVertices, pFileStart, pFileEnd, totalVertexCount, vertexCount, normalCount, texCoordCount, scaleFactor);
+	assembleVerticesForMaterial(pMaterial == nullptr ? nullptr : pMaterial->materialName, &vertexCountForThisMaterial, pVertices, pFileStart, pFileEnd, totalVertexCount, vertexCount, normalCount, texCoordCount, scaleFactor);
 	unmapFileMapping(&modelFileMapping);
 
 	*pOutVertexCount = vertexCountForThisMaterial;
@@ -531,7 +539,119 @@ bool extractMaterialsFromWavefrontMaterial(const char* restrict_modifier pMateri
 	return true;
 }
 
-bool loadModel(software_rasterizer_context_t* pContext, loaded_model_t* pOutModel, const char* pModelFileName, const char* pMaterialFileName, float scaleFactor)
+bool extractMaterialAndModelPathFromScnFile(const char* pScnPath, scn_material_t* pOutMaterial, char* pModelPath)
+{
+	Win32FileMapping scnFileMapping;
+	if(!mapFileForReading(&scnFileMapping, pScnPath))
+	{
+		return false;
+	}
+
+	const char* pScnFileStart 		= (const char*)scnFileMapping.pFileBaseAddress;
+	const char* pScnFileEnd 		= pScnFileStart + scnFileMapping.fileSizeInBytes;
+	const char* pScnFileRunning 	= pScnFileStart;
+
+	bool readMaterial = false;
+	bool readModel = false;
+	bool seekUntilEndOfLine = false;
+	while( pScnFileRunning != pScnFileEnd )
+	{
+		if(seekUntilEndOfLine)
+		{
+			if(*pScnFileRunning == '\n')
+			{
+				seekUntilEndOfLine = false;
+			}
+
+			++pScnFileRunning;
+			continue;
+		}
+
+		if(!readMaterial && !readModel)
+		{
+			if(areStringsEqual(pScnFileRunning, "materials"))
+			{
+				readMaterial = true;
+			}
+			else if(areStringsEqual(pScnFileRunning, "models"))
+			{
+				readModel = true;
+			}
+		}
+		else if(readMaterial)
+		{
+			if(areStringsEqual(pScnFileRunning, "        alpha_cutoff"))
+			{
+				readMaterial = false;
+			}
+			else if(areStringsEqual(pScnFileRunning, "        basecolor_map"))
+			{
+				sscanf(pScnFileRunning, "        basecolor_map: %s", pOutMaterial->baseColorMapPath);
+			}
+			else if(areStringsEqual(pScnFileRunning, "        normal_map"))
+			{
+				sscanf(pScnFileRunning, "        normal_map: %s", pOutMaterial->normalMapPath);
+			}
+		}
+		else if(readModel)
+		{
+			if(areStringsEqual(pScnFileRunning, "        transform"))
+			{
+				readModel = false;
+			}
+			else if(areStringsEqual(pScnFileRunning, "        mesh"))
+			{
+				sscanf(pScnFileRunning, "        mesh: %s", pModelPath);
+			}
+		}
+
+		seekUntilEndOfLine = true;
+	}
+
+	unmapFileMapping(&scnFileMapping);
+	return true;
+}
+
+bool loadScnModel(software_rasterizer_context_t* pContext, loaded_model_t* pOutModel, const char* pScnFileName, float scaleFactor)
+{
+	char scnPath[512];
+	sprintf(scnPath, "test_models/%s", pScnFileName);
+
+	char modelPath[512];
+	scn_material_t material;
+	if(!extractMaterialAndModelPathFromScnFile(scnPath, &material, modelPath))
+	{
+		return false;
+	}
+
+	char baseMapPath[512], normalMapPath[512];
+	sprintf(baseMapPath, "test_models/%s", material.baseColorMapPath);
+	sprintf(normalMapPath, "test_models/%s", material.normalMapPath);
+
+	int textureWidth, textureHeight, textureComponents;
+	const uint8_t* pBaseMapData = stbi_load(baseMapPath, &textureWidth, &textureHeight, &textureComponents, 0);
+	if( pBaseMapData == nullptr )
+	{
+		return false;
+	}
+	pOutModel->textures[0] = k15_create_texture(pContext, "baseColorMap", textureWidth, textureHeight, textureWidth, textureComponents, pBaseMapData);
+
+	const uint8_t* pNormalMapData = stbi_load(normalMapPath, &textureWidth, &textureHeight, &textureComponents, 0);
+	if( pNormalMapData == nullptr )
+	{
+		return false;
+	}
+	pOutModel->textures[1] = k15_create_texture(pContext, "normalMap", textureWidth, textureHeight, textureWidth, textureComponents, pNormalMapData);
+
+	char correctModelPath[512];
+	sprintf(correctModelPath, "test_models/%s", modelPath);
+
+	pOutModel->vertexBuffers[0] = extractVerticesForMaterialFromWavefrontModel(pContext, correctModelPath, nullptr, &pOutModel->vertexCounts[0], scaleFactor);
+	pOutModel->subModelCount = 1u;
+	return true;
+}
+
+bool loadObjModel(software_rasterizer_context_t* pContext, loaded_model_t* pOutModel, const char* pModelFileName, const char* pMaterialFileName, float scaleFactor)
 {
 	loaded_model_t model = {};
 
@@ -613,31 +733,31 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	const bool firstKeyDown = (lparam & (1<<30)) == 0;
 	const bool isKeyUp 		= !isKeyDown;
 
-	if(wparam == VK_DOWN)
+	if(wparam == 'S')
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.y = 0.005f;
+			cameraVelocity.z = 0.005f;
 		}
 		else if(isKeyUp)
 		{
-			cameraVelocity.y = 0.0f;
+			cameraVelocity.z = 0.0f;
 		}
 	}
 
-	if(wparam == VK_UP)
+	if(wparam == 'W')
 	{
 		if(isKeyDown && firstKeyDown)
 		{
-			cameraVelocity.y = -0.005f;
+			cameraVelocity.z = -0.005f;
 		}
 		else if(isKeyUp)
 		{
-			cameraVelocity.y = 0.0f;
+			cameraVelocity.z = 0.0f;
 		}
 	}
 	
-	if(wparam == VK_LEFT)
+	if(wparam == 'D')
 	{
 		if(isKeyDown && firstKeyDown)
 		{
@@ -649,7 +769,7 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 		}
 	}
 
-	if(wparam == VK_RIGHT)
+	if(wparam == 'A')
 	{
 		if(isKeyDown && firstKeyDown)
 		{
@@ -658,30 +778,6 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 		else if(isKeyUp)
 		{
 			cameraVelocity.x = 0.0f;
-		}
-	}
-
-	if(wparam == VK_NEXT)
-	{
-		if(isKeyDown && firstKeyDown)
-		{
-			cameraVelocity.z = -0.005f;
-		}
-		else if(isKeyUp)
-		{
-			cameraVelocity.z = 0.0f;
-		}
-	}
-
-	if(wparam == VK_PRIOR)
-	{
-		if(isKeyDown && firstKeyDown)
-		{
-			cameraVelocity.z = 0.005f;
-		}
-		else if(isKeyUp)
-		{
-			cameraVelocity.z = 0.0f;
 		}
 	}
 }
@@ -837,10 +933,47 @@ void vertexShader(vertex_shader_input_t* pInOutVertices, uint32_t vertexCount, c
     
 	_k15_mul_multiple_vector4_matrix44(pInOutVertices->positions, &positionMatrix, vertexCount);
 	_k15_mul_multiple_vector4_matrix44(pInOutVertices->normals, &normalMatrix, vertexCount);
+
+	for( uint32_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex )
+	{
+		vector4f_t color = pShaderData->ambientColor;
+		vector4f_t lightColor = k15_create_vector4f(0.0f, 0.0f, 0.0f, 1.0f);
+		for( uint32_t lightIndex = 0; lightIndex < pShaderData->lightCount; ++lightIndex )
+		{
+			const float lightRadiusSquared = pShaderData->lights[lightIndex].radius *  pShaderData->lights[lightIndex].radius;
+			const vector4f_t vertexToLight = k15_vector4f_sub(pShaderData->lights[lightIndex].position, pInOutVertices->positions[vertexIndex]);
+			const vector4f_t vertexToLightNormalized = k15_vector4f_normalize(vertexToLight);
+			const float lightAngle = k15_vector4f_dot(vertexToLightNormalized, pInOutVertices->normals[vertexIndex]);
+			const float vertexToLightSquared = k15_vector4f_length_squared(vertexToLight);
+			if( vertexToLightSquared <= lightRadiusSquared )
+			{
+				const float distanceNormalized = 1.0f - (vertexToLightSquared / lightRadiusSquared);
+				lightColor = k15_vector4f_add(lightColor, k15_vector4f_scale(pShaderData->lights[lightIndex].color, distanceNormalized * lightAngle));
+			}
+		}
+
+		pInOutVertices->colors[vertexIndex] = k15_vector4f_clamp01(k15_vector4f_add(lightColor, pShaderData->ambientColor));
+	}
+	
 }
 
 void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const void* pUniformData)
 {
+#if 1
+	shaderUniformData* pShaderData = (shaderUniformData*)pUniformData;
+	for( uint32_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex )
+	{
+		float rgb[3];
+		k15_sample_texture_nearest_neighbor<sample_addressing_mode_t::repeat>(rgb, pShaderData->texture, pInOutPixels->vertexAttributes[pixelIndex].texcoord);
+		
+		vector4f_t color = k15_create_vector4f(rgb[0], rgb[1], rgb[2], 1.0f);
+		color = k15_vector4f_hadamard(color, pInOutPixels->vertexAttributes[pixelIndex].color);
+
+		pInOutPixels->color[pixelIndex].r = color.x;
+		pInOutPixels->color[pixelIndex].g = color.y;
+		pInOutPixels->color[pixelIndex].b = color.z;
+	}
+#else
 	shaderUniformData* pShaderData = (shaderUniformData*)pUniformData;
 	for( uint32_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex )
 	{
@@ -871,6 +1004,7 @@ void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const 
 		pInOutPixels->color[pixelIndex].g = color.y;
 		pInOutPixels->color[pixelIndex].b = color.z;
 	}
+#endif
 }
 
 loaded_model_t loadedModel = {};
@@ -899,7 +1033,7 @@ bool setup()
 		return false;
 	}
 
-	k15_create_projection_matrix(&projectionMatrix, virtualScreenWidth, virtualScreenHeight, 1.0f, 10.f, 90.f);
+	k15_create_projection_matrix(&projectionMatrix, virtualScreenWidth, virtualScreenHeight, 1.0f, 100.f, 90.f);
 
 	vertexShaderHandle = k15_create_vertex_shader(pContext, vertexShader);
 	pixelShaderHandle = k15_create_pixel_shader(pContext, pixelShader);
@@ -914,9 +1048,11 @@ bool setup()
 	shaderData.lights[1].position = k15_create_vector4f(0.0f, 1.0f, 0.0f, 1.0f);
 	shaderData.lights[1].radius = 1.0f;
 
-	shaderData.ambientColor = k15_create_vector4f(0.1f, 0.1f, 0.1f, 1.0f);
+	shaderData.ambientColor = k15_create_vector4f(1.0f, 1.0f, 1.0f, 1.0f);
+	//shaderData.ambientColor = k15_create_vector4f(0.1f, 0.1f, 0.1f, 1.0f);
 
-	return loadModel(pContext, &loadedModel, "crashbandicoot.obj", "crashbandicoot.mtl", 0.005f);
+	return loadObjModel(pContext, &loadedModel, "crashbandicoot.obj", "crashbandicoot.mtl", 0.005f);
+	//return loadScnModel(pContext, &loadedModel, "helmet.scn", 0.5f);
 }
 
 void drawBackBuffer(HDC deviceContext)
@@ -929,14 +1065,15 @@ void drawBackBuffer(HDC deviceContext)
 
 void doFrame(float deltaTimeInMs)
 {
-	static float angle = 0.5f;
+	static float angle = 2.5f;
 	static bool lightGoLeft = false;
 	static bool lightGoUp = false;
 
-	angle += 0.005f * deltaTimeInMs;
+	angle += 0.002f * deltaTimeInMs;
 
 	cameraPos = k15_vector4f_add(k15_vector4f_scale(cameraVelocity, deltaTimeInMs), cameraPos);
 
+	static float scale = 0.2f;
 	matrix4x4f_t rotation = {cosf(angle), 	0.0f, 	sinf(angle), 	0.0f,
 							 0.0f, 			-1.0f, 	0.0f, 			0.6f,
 							 -sinf(angle), 	0.0f, 	cosf(angle), 	0.0f,
@@ -995,6 +1132,7 @@ void doFrame(float deltaTimeInMs)
 		k15_bind_vertex_buffer(pContext, loadedModel.vertexBuffers[subModelIndex]);
 		k15_bind_texture(pContext, loadedModel.textures[subModelIndex], 0u);
 		shaderData.texture = loadedModel.textures[subModelIndex];
+		shaderData.normalMap = loadedModel.textures[1];
 		k15_set_uniform_buffer_data(uniformBufferHandle, &shaderData, sizeof(shaderData), 0u);
 		k15_draw(pContext, loadedModel.vertexCounts[subModelIndex], 0u);
 	}
