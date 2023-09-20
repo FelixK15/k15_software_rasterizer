@@ -33,7 +33,7 @@ struct vector2u_t
 
 struct bounding_box_t
 {
-    uint32_t x1, x2, y1, y2;
+    int32_t x1, x2, y1, y2;
 };
 
 struct vertex_buffer_handle_t
@@ -118,28 +118,26 @@ struct vertex_t
     vector2f_t texcoord;
 };
 
+struct p
+{
+    vector4f_t positions[PixelShaderInputCount];
+    vector4f_t normals[PixelShaderInputCount];
+    vector4f_t colors[PixelShaderInputCount];
+    vector2f_t texcoords[PixelShaderInputCount];
+};
+
 struct pixel_shader_input_t
 {
-    struct rgba_color_t 
-    {
-        float r;
-        float g;
-        float b;
-        float a;
-    };
+    p                           vertexAttributes;
+    vector4f_t                  outputColors[PixelShaderInputCount];
+    float                       depth[PixelShaderInputCount];
+    const uint32_t              screenSpaceX[PixelShaderInputCount];
+    const uint32_t              screenSpaceY[PixelShaderInputCount];
+};
 
-    struct barycentric_t
-    {
-        float u;
-        float v;
-        float w;
-    };
-
-    rgba_color_t    color[PixelShaderInputCount];
-    vertex_t        vertexAttributes[PixelShaderInputCount];
-    float           depth[PixelShaderInputCount];
-    const uint32_t  screenSpaceX[PixelShaderInputCount];
-    const uint32_t  screenSpaceY[PixelShaderInputCount];
+struct texture_samples_t
+{
+    vector4f_t colors[PixelShaderInputCount];
 };
 
 struct pixel_t
@@ -192,6 +190,11 @@ void                                            k15_bind_uniform_buffer(software
 void                                            k15_bind_texture(software_rasterizer_context_t* pContext, texture_handle_t texture, uint32_t slot);
 bool                                            k15_draw(software_rasterizer_context_t* pContext, uint32_t vertexCount);
 
+template<sample_addressing_mode_t ADDRESSING_MODE>
+texture_samples_t                               k15_sample_texture(texture_handle_t texture, vector2f_t* pTexcoords, uint32_t texcoordCount);
+
+constexpr vertex_t                              k15_create_vertex(vector4f_t position, vector4f_t normal, vector4f_t color, vector2f_t texcoord);
+
 #ifdef K15_SOFTWARE_RASTERIZER_IMPLEMENTATION
 
 #ifdef _MSC_BUILD
@@ -207,6 +210,11 @@ bool                                            k15_draw(software_rasterizer_con
 #define BreakpointHook()
 #endif
 
+#if defined (_M_X64) || defined (_M_AMD64 ) || defined(__x86_64__)
+#include <immintrin.h>
+#define MemoryPrefetch0(ptr) _mm_prefetch((const char*)ptr, _MM_HINT_T0)
+#endif
+
 #define CompiletimeAssert(x)        static_assert(x)
 #define RuntimeAssertMsg(x, msg)    RuntimeAssert(x)
 #define UnusedVariable(x)           (void)(x)
@@ -215,6 +223,8 @@ bool                                            k15_draw(software_rasterizer_con
 #define get_max(a,b) (a)>(b)?(a):(b)
 
 #define clamp(v, min, max) (v)>(max)?(max):(v)<(min)?(min):(v)
+
+#include <limits.h>
 
 constexpr uint32_t MaxColorBuffer                               = 3u;
 constexpr uint32_t DefaultTriangleBufferCapacity                = 1024u;
@@ -490,6 +500,25 @@ T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementC
 }
 
 template<typename T>
+T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, const T* pValues, uint32_t elementCount)
+{
+    const uint32_t newTriangleCount = pBuffer->count + elementCount;
+    if(newTriangleCount >= pBuffer->capacity)
+    {
+        if(!_k15_grow_dynamic_buffer(pBuffer, newTriangleCount))
+        {
+            return nullptr;
+        }
+    }
+
+    uint32_t oldCount = pBuffer->count;
+    pBuffer->count += elementCount;
+
+    memcpy(pBuffer->pData + oldCount, pValues, sizeof(T) * elementCount);
+    return pBuffer->pData + oldCount;
+}
+
+template<typename T>
 T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, T value)
 {
     T* pValue = _k15_dynamic_buffer_push_back(pBuffer, 1u);
@@ -643,11 +672,21 @@ void k15_create_projection_matrix(matrix4x4f_t* pOutMatrix, uint32_t width, uint
     const float aspect = widthF / heightF;
     const float e = 1.0f/tanf(fovRad/2.0f);
 
+#if 1
     pOutMatrix->m00 = e/aspect;
     pOutMatrix->m11 = e;
-    pOutMatrix->m22 = -((far + near)/(near - far));
-    pOutMatrix->m23 = -((2.0f*far*near)/(near-far));
+    pOutMatrix->m22 = -((far + near)/(far - near));
+    pOutMatrix->m23 = -((2.0f * far * near)/(far - near));
     pOutMatrix->m32 = -1.0f;
+#else
+    pOutMatrix->m00 = (2.f*near)/widthF;
+    pOutMatrix->m02 = 0.0f;
+    pOutMatrix->m11 = (2.0f*near)/heightF;
+    pOutMatrix->m12 = 0.0f;
+    pOutMatrix->m22 = -((far+near)/(far-near));
+    pOutMatrix->m23 = -((2.0f*near*far)/(far-near));
+    pOutMatrix->m32 = -1.0f;
+#endif
 }
 
 void k15_create_orthographic_matrix(matrix4x4f_t* pOutMatrix, uint32_t width, uint32_t height, float near, float far)
@@ -668,6 +707,7 @@ void k15_set_identity_matrix4x4f(matrix4x4f_t* pMatrix)
 
 bool _k15_matrix4x4f_is_equal(const matrix4x4f_t* restrict_modifier pA, const matrix4x4f_t* restrict_modifier pB)
 {
+    CompiletimeAssert(sizeof(matrix4x4f_t) == sizeof(float[16]));
     return memcmp(pA, pB, sizeof(matrix4x4f_t)) == 0;
 }
 
@@ -801,18 +841,20 @@ bool k15_is_in_range_inclusive(T value, T min, T max)
 
 uint8_t float_to_uint8(float value)
 {
-    RuntimeAssert(value >= 0.0f);
-    RuntimeAssert(value <= 255.0f);
-
+    RuntimeAssert(value >= 0.0f && value <= (float)UINT8_MAX);
     return (uint8_t)value;
 }
 
 uint32_t float_to_uint32(float value)
 {
-    RuntimeAssert(value >= 0.0f);
-    RuntimeAssert(value <= (float)0xFFFFFFFF);
-
+    RuntimeAssert(value >= 0.0f && value <= (float)UINT_MAX);
     return (uint32_t)value;
+}
+
+uint32_t float_to_int32(float value)
+{
+    RuntimeAssert(value >= (float)INT_MIN && value <= (float)INT_MAX)
+    return (int32_t)value;
 }
 
 vector4f_t k15_vector4f_hadamard(vector4f_t a, vector4f_t b)
@@ -911,99 +953,239 @@ float k15_vector2f_dot(vector2f_t a, vector2f_t b)
     return a.x * b.x + a.y * b.y;
 }
 
-vector4f_t k15_create_vector4f(float x, float y, float z, float w)
+float k15_vector3f_dot(vector3f_t a, vector3f_t b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+constexpr vector4f_t k15_create_vector4f(float x, float y, float z, float w)
 {
     return {x, y, z, w};
 }
 
-vector3f_t k15_create_vector3f(float x, float y, float z)
+constexpr vector3f_t k15_create_vector3f(float x, float y, float z)
 {
     return {x, y, z};
 }
 
-vector2f_t k15_create_vector2f(float x, float y)
+constexpr vector2f_t k15_create_vector2f(float x, float y)
 {
     return {x, y};
 }
 
-inline void k15_repeat_texcoord(vector2f_t* pTexcoord)
+inline void k15_repeat_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
 {
-    RuntimeAssert(pTexcoord->x < 2.0f);
-    RuntimeAssert(pTexcoord->y < 2.0f);
-    
-    if( pTexcoord->x > 1.0f )
+    for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex )
     {
-        pTexcoord->x = (pTexcoord->x - 1.0f);
-    }
+        RuntimeAssert(pTexcoords[texCoordIndex].x < 2.0f);
+        RuntimeAssert(pTexcoords[texCoordIndex].y < 2.0f);
+        
+        if( pTexcoords[texCoordIndex].x > 1.0f )
+        {
+            pTexcoords[texCoordIndex].x = (pTexcoords[texCoordIndex].x - 1.0f);
+        }
 
-    if( pTexcoord->y > 1.0f )
-    {
-        pTexcoord->y = (pTexcoord->y - 1.0f);
+        if( pTexcoords[texCoordIndex].y > 1.0f )
+        {
+            pTexcoords[texCoordIndex].y = (pTexcoords[texCoordIndex].y - 1.0f);
+        }
     }
 }
 
-inline void k15_clamp_texcoord(vector2f_t* pTexcoord)
+inline void k15_clamp_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
 {
-    pTexcoord->x = clamp(pTexcoord->x, 0.0f, 1.0f);
-    pTexcoord->y = clamp(pTexcoord->y, 0.0f, 1.0f);
+    for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex )
+    {
+        pTexcoords[texCoordIndex].x = clamp(pTexcoords[texCoordIndex].x, 0.0f, 1.0f);
+        pTexcoords[texCoordIndex].y = clamp(pTexcoords[texCoordIndex].y, 0.0f, 1.0f);
+    }
 }
 
-inline void k15_mirror_texcoord(vector2f_t* pTexcoord)
+inline void k15_mirror_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
 {
-    RuntimeAssert(pTexcoord->x < 2.0f);
-    RuntimeAssert(pTexcoord->y < 2.0f);
-
-     if( pTexcoord->x > 1.0f )
+    for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex )
     {
-        pTexcoord->x = 1.0f - (pTexcoord->x - 1.0f);
-    }
+        RuntimeAssert(pTexcoords[texCoordIndex].x < 2.0f);
+        RuntimeAssert(pTexcoords[texCoordIndex].y < 2.0f);
 
-    if( pTexcoord->y > 1.0f )
-    {
-        pTexcoord->y = 1.0f - (pTexcoord->y - 1.0f);
+        if( pTexcoords[texCoordIndex].x > 1.0f )
+        {
+            pTexcoords[texCoordIndex].x = 1.0f - (pTexcoords[texCoordIndex].x - 1.0f);
+        }
+
+        if( pTexcoords[texCoordIndex].y > 1.0f )
+        {
+            pTexcoords[texCoordIndex].y = 1.0f - (pTexcoords[texCoordIndex].y - 1.0f);
+        }
     }
 }
 
 template<sample_addressing_mode_t ADDRESSING_MODE>
-void k15_sample_texture_nearest_neighbor(float* rgb, texture_handle_t texture, vector2f_t texcoord)
+texture_samples_t k15_sample_texture(texture_handle_t texture, vector2f_t* restrict_modifier pTexcoords, uint32_t texcoordCount)
 {
+    RuntimeAssert(texcoordCount <= PixelShaderInputCount);
     texture_t* pTextureData = (texture_t*)texture.pHandle;
 
     switch( ADDRESSING_MODE )
     {
         case sample_addressing_mode_t::repeat:
-        k15_repeat_texcoord(&texcoord);
+        k15_repeat_texcoords(pTexcoords, texcoordCount);
         break;
 
         case sample_addressing_mode_t::clamp:
-        k15_clamp_texcoord(&texcoord);
+        k15_clamp_texcoords(pTexcoords, texcoordCount);
         break;
 
         case sample_addressing_mode_t::mirror:
-        k15_mirror_texcoord(&texcoord);
+        k15_mirror_texcoords(pTexcoords, texcoordCount);
         break;
     }
 
     const uint32_t width = pTextureData->width - 1u;
     const uint32_t height = pTextureData->height - 1u;
+    const uint32_t stride = pTextureData->stride;
+    const uint8_t componentCount = pTextureData->componentCount;
+    const uint32_t texcoordBatchRest = texcoordCount & 0x3;
+    texcoordCount -= texcoordBatchRest;
 
-    const uint32_t x = float_to_uint32(clamp(texcoord.x * (float)width, 0, (float)width));
-    const uint32_t y = height - float_to_uint32(clamp(texcoord.y * (float)height, 0, (float)height));
-    const uint32_t texturePixelIndex = x + y * pTextureData->stride;
+    const uint8_t* restrict_modifier pTextureImageData = (uint8_t*)pTextureData->pData;
+    texture_samples_t samples = {};
+    {
+        uint32_t x[4], y[4], texelIndices[4], nextX[4], nextY[4], nextTexelIndices[4];
 
-    const uint8_t* pTextureImageData = (uint8_t*)pTextureData->pData;
+        nextX[0] = float_to_uint32(clamp(pTexcoords[0].x * (float)width, 0, (float)width));
+        nextX[1] = float_to_uint32(clamp(pTexcoords[1].x * (float)width, 0, (float)width));
+        nextX[2] = float_to_uint32(clamp(pTexcoords[2].x * (float)width, 0, (float)width));
+        nextX[3] = float_to_uint32(clamp(pTexcoords[3].x * (float)width, 0, (float)width));
 
-    rgb[0] = (float)pTextureImageData[texturePixelIndex * pTextureData->componentCount + 0] / 255.f;
-    rgb[1] = (float)pTextureImageData[texturePixelIndex * pTextureData->componentCount + 1] / 255.f;
-    rgb[2] = (float)pTextureImageData[texturePixelIndex * pTextureData->componentCount + 2] / 255.f;
+        nextY[0] = height - float_to_uint32(clamp(pTexcoords[0].y * (float)height, 0, (float)height));
+        nextY[1] = height - float_to_uint32(clamp(pTexcoords[1].y * (float)height, 0, (float)height));
+        nextY[2] = height - float_to_uint32(clamp(pTexcoords[2].y * (float)height, 0, (float)height));
+        nextY[3] = height - float_to_uint32(clamp(pTexcoords[3].y * (float)height, 0, (float)height));
+
+        nextTexelIndices[0] = nextX[0] + nextY[0] * stride;
+        nextTexelIndices[1] = nextX[1] + nextY[1] * stride;
+        nextTexelIndices[2] = nextX[2] + nextY[2] * stride;
+        nextTexelIndices[3] = nextX[3] + nextY[3] * stride;
+
+        for( uint32_t texcoordIndex = 0u; texcoordIndex < texcoordCount; texcoordIndex += 4u)
+        {
+            memcpy(x, nextX, sizeof(x));
+            memcpy(y, nextY, sizeof(y));
+            memcpy(texelIndices, nextTexelIndices, sizeof(texelIndices));
+
+            //FK: This will read out of bounds in the last loop iteration - but that shouldn't be a problem
+            nextX[0] = float_to_uint32(clamp(pTexcoords[texcoordIndex + 4].x * (float)width, 0, (float)width));
+            nextX[1] = float_to_uint32(clamp(pTexcoords[texcoordIndex + 5].x * (float)width, 0, (float)width));
+            nextX[2] = float_to_uint32(clamp(pTexcoords[texcoordIndex + 6].x * (float)width, 0, (float)width));
+            nextX[3] = float_to_uint32(clamp(pTexcoords[texcoordIndex + 7].x * (float)width, 0, (float)width));
+
+            nextY[0] = height - float_to_uint32(clamp(pTexcoords[texcoordIndex + 4].y * (float)height, 0, (float)height));
+            nextY[1] = height - float_to_uint32(clamp(pTexcoords[texcoordIndex + 5].y * (float)height, 0, (float)height));
+            nextY[2] = height - float_to_uint32(clamp(pTexcoords[texcoordIndex + 6].y * (float)height, 0, (float)height));
+            nextY[3] = height - float_to_uint32(clamp(pTexcoords[texcoordIndex + 7].y * (float)height, 0, (float)height));
+
+            nextTexelIndices[0] = nextX[0] + nextY[0] * stride;
+            nextTexelIndices[1] = nextX[1] + nextY[1] * stride;
+            nextTexelIndices[2] = nextX[2] + nextY[2] * stride;
+            nextTexelIndices[3] = nextX[3] + nextY[3] * stride;
+
+            MemoryPrefetch0(pTextureImageData + nextTexelIndices[0] * componentCount);
+            MemoryPrefetch0(pTextureImageData + nextTexelIndices[1] * componentCount);
+            MemoryPrefetch0(pTextureImageData + nextTexelIndices[2] * componentCount);
+            MemoryPrefetch0(pTextureImageData + nextTexelIndices[3] * componentCount);
+
+            switch(componentCount)
+            {
+                case 4u:
+                    samples.colors[texcoordIndex + 0].w = (float)pTextureImageData[texelIndices[0] * componentCount + 3] / 255.f;
+                    samples.colors[texcoordIndex + 1].w = (float)pTextureImageData[texelIndices[1] * componentCount + 3] / 255.f;
+                    samples.colors[texcoordIndex + 2].w = (float)pTextureImageData[texelIndices[2] * componentCount + 3] / 255.f;
+                    samples.colors[texcoordIndex + 3].w = (float)pTextureImageData[texelIndices[3] * componentCount + 3] / 255.f;
+                case 3u:
+                    samples.colors[texcoordIndex + 0].z = (float)pTextureImageData[texelIndices[0] * componentCount + 2] / 255.f;
+                    samples.colors[texcoordIndex + 1].z = (float)pTextureImageData[texelIndices[1] * componentCount + 2] / 255.f;
+                    samples.colors[texcoordIndex + 2].z = (float)pTextureImageData[texelIndices[2] * componentCount + 2] / 255.f;
+                    samples.colors[texcoordIndex + 3].z = (float)pTextureImageData[texelIndices[3] * componentCount + 2] / 255.f;
+                case 2u:
+                    samples.colors[texcoordIndex + 0].y = (float)pTextureImageData[texelIndices[0] * componentCount + 1] / 255.f;
+                    samples.colors[texcoordIndex + 1].y = (float)pTextureImageData[texelIndices[1] * componentCount + 1] / 255.f;
+                    samples.colors[texcoordIndex + 2].y = (float)pTextureImageData[texelIndices[2] * componentCount + 1] / 255.f;
+                    samples.colors[texcoordIndex + 3].y = (float)pTextureImageData[texelIndices[3] * componentCount + 1] / 255.f;
+                case 1u:
+                    samples.colors[texcoordIndex + 0].x = (float)pTextureImageData[texelIndices[0] * componentCount + 0] / 255.f;
+                    samples.colors[texcoordIndex + 1].x = (float)pTextureImageData[texelIndices[1] * componentCount + 0] / 255.f;
+                    samples.colors[texcoordIndex + 2].x = (float)pTextureImageData[texelIndices[2] * componentCount + 0] / 255.f;
+                    samples.colors[texcoordIndex + 3].x = (float)pTextureImageData[texelIndices[3] * componentCount + 0] / 255.f;
+                    break;
+
+                default:
+                    RuntimeAssert(false);
+            }
+        }
+    }
+
+    for( uint32_t texcoordIndex = 0; texcoordIndex < texcoordBatchRest; ++texcoordIndex )
+    {
+        const uint32_t globalTexcoordIndex = texcoordIndex + texcoordCount;
+        const uint32_t x = float_to_uint32(clamp(pTexcoords[globalTexcoordIndex].x * (float)width, 0, (float)width));
+        const uint32_t y = height - float_to_uint32(clamp(pTexcoords[globalTexcoordIndex].y * (float)height, 0, (float)height));
+        const uint32_t texelIndex = x + y * stride;
+
+        switch(componentCount)
+        {
+            case 4u:
+                samples.colors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
+                samples.colors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
+                samples.colors[globalTexcoordIndex].z = (float)pTextureImageData[texelIndex * componentCount + 2] / 255.f;
+                samples.colors[globalTexcoordIndex].w = (float)pTextureImageData[texelIndex * componentCount + 3] / 255.f;
+                break;
+            case 3u:
+                samples.colors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
+                samples.colors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
+                samples.colors[globalTexcoordIndex].z = (float)pTextureImageData[texelIndex * componentCount + 2] / 255.f;
+                break;
+            case 2u:
+                samples.colors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
+                samples.colors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
+                break;
+            case 1u:
+                samples.colors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
+                break;
+
+            default:
+                RuntimeAssert(false);
+        }
+    }
+
+    return samples;
 }
 
-void k15_generate_barycentric_vertex(vertex_t* restrict_modifier pOutVertex, const vertex_t* restrict_modifier pTriangleVertices, float u, float v, float w)
+constexpr vertex_t k15_create_vertex(vector4f_t position, vector4f_t normal, vector4f_t color, vector2f_t texcoord)
 {
-    pOutVertex->position  = k15_vector4f_add(k15_vector4f_add(k15_vector4f_scale(pTriangleVertices[0].position, u), k15_vector4f_scale(pTriangleVertices[1].position, v)), k15_vector4f_scale(pTriangleVertices[2].position, w));
-    pOutVertex->normal    = k15_vector4f_add(k15_vector4f_add(k15_vector4f_scale(pTriangleVertices[0].normal, u), k15_vector4f_scale(pTriangleVertices[1].normal, v)), k15_vector4f_scale(pTriangleVertices[2].normal, w));
-    pOutVertex->color     = k15_vector4f_add(k15_vector4f_add(k15_vector4f_scale(pTriangleVertices[0].color, u), k15_vector4f_scale(pTriangleVertices[1].color, v)), k15_vector4f_scale(pTriangleVertices[2].color, w));
-    pOutVertex->texcoord  = k15_vector2f_add(k15_vector2f_add(k15_vector2f_scale(pTriangleVertices[0].texcoord, u), k15_vector2f_scale(pTriangleVertices[1].texcoord, v)), k15_vector2f_scale(pTriangleVertices[2].texcoord, w));
+    vertex_t vertex = {};
+    vertex.position = position;
+    vertex.normal = normal;
+    vertex.color = color;
+    vertex.texcoord = texcoord;
+
+    return vertex;
+}
+
+
+void k15_generate_barycentric_vertices(p* pOutVertex, const vector3f_t* pBarycentricCoordinates, const vertex_t* pTriangleVertices, uint32_t vertexCount)
+{
+    for( uint32_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex )
+    {
+        const float u = pBarycentricCoordinates[vertexIndex].x;
+        const float v = pBarycentricCoordinates[vertexIndex].y;
+        const float w = pBarycentricCoordinates[vertexIndex].z;
+        
+        pOutVertex->positions[vertexIndex]  = k15_vector4f_add(k15_vector4f_add(k15_vector4f_scale(pTriangleVertices[0].position, u), k15_vector4f_scale(pTriangleVertices[1].position, v)), k15_vector4f_scale(pTriangleVertices[2].position, w));
+        pOutVertex->normals[vertexIndex]    = k15_vector4f_add(k15_vector4f_add(k15_vector4f_scale(pTriangleVertices[0].normal, u), k15_vector4f_scale(pTriangleVertices[1].normal, v)), k15_vector4f_scale(pTriangleVertices[2].normal, w));
+        pOutVertex->colors[vertexIndex]     = k15_vector4f_add(k15_vector4f_add(k15_vector4f_scale(pTriangleVertices[0].color, u), k15_vector4f_scale(pTriangleVertices[1].color, v)), k15_vector4f_scale(pTriangleVertices[2].color, w));
+        pOutVertex->texcoords[vertexIndex]  = k15_vector2f_add(k15_vector2f_add(k15_vector2f_scale(pTriangleVertices[0].texcoord, u), k15_vector2f_scale(pTriangleVertices[1].texcoord, v)), k15_vector2f_scale(pTriangleVertices[2].texcoord, w));
+    }
 }
 
 void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorBuffer, void* pDepthBuffer, uint32_t colorBufferStride, uint8_t redShift, uint8_t greenShift, uint8_t blueShift)
@@ -1015,6 +1197,11 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
 
     uint32_t* pColorBufferContent = (uint32_t*)pColorBuffer;
     float* pDepthBufferContent = (float*)pDepthBuffer;
+
+    p interpolatedVertices = {};
+    vector3f_t barycentricCoordinates[PixelShaderInputCount] = {};
+    vertex_t   triangleVertices[PixelShaderInputCount * 3] = {};
+
     for(uint32_t triangleIndex = 0; triangleIndex < pDrawCallTriangles->screenspaceTriangleCount; ++triangleIndex)
     {
         const screenspace_triangle_t* pTriangle = pDrawCallTriangles->pScreenspaceTriangles + triangleIndex;
@@ -1026,9 +1213,9 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
         _k15_draw_line(pColorBuffer, colorBufferStride, &b, &c, 0xFFFFFFFF);
         _k15_draw_line(pColorBuffer, colorBufferStride, &c, &a, 0xFFFFFFFF);
 #else
-        for(uint32_t y = pTriangle->boundingBox.y1; y < pTriangle->boundingBox.y2; y += PixelShaderTileSize)
+        for(uint32_t y = (uint32_t)pTriangle->boundingBox.y1; y < (uint32_t)pTriangle->boundingBox.y2; y += PixelShaderTileSize)
         {
-            for(uint32_t x = pTriangle->boundingBox.x1; x < pTriangle->boundingBox.x2; x += PixelShaderTileSize)
+            for(uint32_t x = (uint32_t)pTriangle->boundingBox.x1; x < (uint32_t)pTriangle->boundingBox.x2; x += PixelShaderTileSize)
             {   
                 const uint32_t yStep = get_min(PixelShaderTileSize, (pTriangle->boundingBox.y2 - y));
                 const uint32_t xStep = get_min(PixelShaderTileSize, (pTriangle->boundingBox.x2 - x));
@@ -1063,29 +1250,36 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
                             continue;
                         }
 
-                        const float bary_z = pTriangle->screenspaceVertexPositions[0].z * u + pTriangle->screenspaceVertexPositions[1].z * v + pTriangle->screenspaceVertexPositions[2].z * w;
+                        const float bary_z = 1.0f - (pTriangle->screenspaceVertexPositions[0].z * u + pTriangle->screenspaceVertexPositions[1].z * v + pTriangle->screenspaceVertexPositions[2].z * w);
                         const uint32_t depthBufferIndex = tileX + tileY * colorBufferStride;
-                        if( pDepthBufferContent[depthBufferIndex] > bary_z )
+                        if( pDepthBufferContent[depthBufferIndex] >= bary_z )
                         {
                             continue;
                         }
 
                         pDepthBufferContent[depthBufferIndex] = bary_z;
+                        
+                        barycentricCoordinates[pixelIndex].x = u;
+                        barycentricCoordinates[pixelIndex].y = v;
+                        barycentricCoordinates[pixelIndex].z = w;
 
-                        k15_generate_barycentric_vertex(&pixelShaderInput.vertexAttributes[pixelIndex], pTriangle->vertices, u, v, w);
                         (uint32_t)pixelShaderInput.screenSpaceX[pixelIndex] = tileX;
                         (uint32_t)pixelShaderInput.screenSpaceY[pixelIndex] = tileY;
+                        pixelShaderInput.depth[pixelIndex] = bary_z;
                         ++pixelIndex;
                     }
                 }
+
+                k15_generate_barycentric_vertices(&interpolatedVertices, barycentricCoordinates, pTriangle->vertices, pixelIndex);
+                memcpy(&pixelShaderInput.vertexAttributes, &interpolatedVertices, sizeof(interpolatedVertices));
 
                 pixelShader(&pixelShaderInput, pixelIndex, pUniformData);
 
                 for( uint32_t i = 0; i < pixelIndex; ++i)
                 {
-                    const uint8_t red   = float_to_uint8(clamp(pixelShaderInput.color[i].r, 0.0f, 1.0f) * 255.f);
-                    const uint8_t green = float_to_uint8(clamp(pixelShaderInput.color[i].g, 0.0f, 1.0f) * 255.f);
-                    const uint8_t blue  = float_to_uint8(clamp(pixelShaderInput.color[i].b, 0.0f, 1.0f) * 255.f);
+                    const uint8_t red   = float_to_uint8(clamp(pixelShaderInput.outputColors[i].x, 0.0f, 1.0f) * 255.f);
+                    const uint8_t green = float_to_uint8(clamp(pixelShaderInput.outputColors[i].y, 0.0f, 1.0f) * 255.f);
+                    const uint8_t blue  = float_to_uint8(clamp(pixelShaderInput.outputColors[i].z, 0.0f, 1.0f) * 255.f);
 
                     const uint32_t color = red << redShift | green << greenShift | blue << blueShift;
                     uint32_t colorMapIndex = pixelShaderInput.screenSpaceX[i] + pixelShaderInput.screenSpaceY[i] * colorBufferStride;
@@ -1370,6 +1564,17 @@ inline vector4f_t k15_vector4f_div(vector4f_t vector, float div)
     return divVector;
 }
 
+inline vector3f_t k15_vector3f_normalize(vector3f_t vector)
+{
+    vector3f_t normalizedVector = {};
+    float vectorLength = sqrtf(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
+    normalizedVector.x = vector.x / vectorLength;
+    normalizedVector.y = vector.y / vectorLength;
+    normalizedVector.z = vector.z / vectorLength;
+
+    return normalizedVector;
+}
+
 inline vector4f_t k15_vector4f_normalize(vector4f_t vector)
 {
     vector4f_t normalizedVector = {};
@@ -1380,6 +1585,16 @@ inline vector4f_t k15_vector4f_normalize(vector4f_t vector)
     normalizedVector.w = vector.w / vectorLength;
 
     return normalizedVector;
+}
+
+inline vector3f_t k15_vector3f_cross(vector3f_t a, vector3f_t b)
+{
+    vector3f_t crossVector = {};
+    crossVector.x = a.y * b.z - a.z * b.y;
+    crossVector.y = a.z * b.x - a.x * b.z;
+    crossVector.z = a.x * b.y - a.y * b.x;
+
+    return crossVector;
 }
 
 inline vector4f_t k15_vector4f_cross(vector4f_t a, vector4f_t b)
@@ -1408,30 +1623,6 @@ vector4f_t k15_vector4f_sub(vector4f_t a, vector4f_t b)
     v.w = a.w - b.w;
 
     return v;
-}
-
-bool k15_cull_backfacing_triangles(software_rasterizer_context_t* pContext)
-{
-    dynamic_buffer_t<triangle_t>* pvisibleTriangles = &pContext->visibleTriangles;
-    for(uint32_t triangleIndex = 0; triangleIndex < pContext->triangles.count; ++triangleIndex)
-    {
-        triangle_t* pTriangle = (triangle_t*)pContext->triangles.pData + triangleIndex;
-        const vector4f_t ab = k15_vector4f_sub(pTriangle->vertices[1].position, pTriangle->vertices[0].position);
-        const vector4f_t ac = k15_vector4f_sub(pTriangle->vertices[2].position, pTriangle->vertices[0].position);
-        const vector4f_t sign = k15_vector4f_cross(ab, ac);
-
-        if(sign.z > 0.0f)
-        {
-            triangle_t* pNonCulledTriangle = _k15_dynamic_buffer_push_back(pvisibleTriangles, 1u);
-            if(pNonCulledTriangle == nullptr)
-            {
-                return false;
-            }
-            memcpy(pNonCulledTriangle, pTriangle, sizeof(triangle_t));
-        }
-    }
-
-    return true;
 }
 
 inline bool _k15_is_position_outside_frustum(const vector4f_t position)
@@ -1714,11 +1905,6 @@ bool k15_clip_triangles(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffe
     
     for(uint32_t triangleIndex = 0; triangleIndex < triangleCount; ++triangleIndex)
     {
-        if( triangleIndex == 3618 )
-        {
-            BreakpointHook();
-        }
-
         if(localClippedVertices.count + 6u >= localClippedVertices.capacity)
         {
             if(!k15_generate_clip_triangles_from_clip_vertices(localClippedVertices.pStaticData, localClippedVertices.count, pClippedTriangles))
@@ -1840,8 +2026,8 @@ bool k15_project_triangles_into_screenspace(draw_call_triangles_t* pDrawCallTria
 
     pDrawCallTriangles->screenspaceTriangleCount = pDrawCallTriangles->triangleCount;
 
-    const float width   = (float)backBufferWidth-1u;
-    const float height  = (float)backBufferHeight-1u;
+    const float width   = (float)(backBufferWidth-1u);
+    const float height  = (float)(backBufferHeight-1u);
     screenspace_triangle_t* pScreenspaceTriangles = pDrawCallTriangles->pScreenspaceTriangles;
 
     for(uint32_t triangleIndex = 0; triangleIndex < pDrawCallTriangles->screenspaceTriangleCount; ++triangleIndex)
@@ -1862,15 +2048,15 @@ bool k15_project_triangles_into_screenspace(draw_call_triangles_t* pDrawCallTria
         pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].y = (((1.0f + pTriangle->vertices[2].position.y / pTriangle->vertices[2].position.w) / 2.0f) * height);
         pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].z = pTriangle->vertices[2].position.z / pTriangle->vertices[2].position.w;
 
-        pScreenspaceTriangles[triangleIndex].boundingBox.x1 = float_to_uint32(get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].x, get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].x, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].x)));
-        pScreenspaceTriangles[triangleIndex].boundingBox.x2 = float_to_uint32(get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].x, get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].x, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].x)));
-        pScreenspaceTriangles[triangleIndex].boundingBox.y1 = float_to_uint32(get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].y, get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].y, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].y)));
-        pScreenspaceTriangles[triangleIndex].boundingBox.y2 = float_to_uint32(get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].y, get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].y, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].y)));
+        pScreenspaceTriangles[triangleIndex].boundingBox.x1 = float_to_int32(get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].x, get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].x, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].x)));
+        pScreenspaceTriangles[triangleIndex].boundingBox.x2 = float_to_int32(get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].x, get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].x, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].x)));
+        pScreenspaceTriangles[triangleIndex].boundingBox.y1 = float_to_int32(get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].y, get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].y, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].y)));
+        pScreenspaceTriangles[triangleIndex].boundingBox.y2 = float_to_int32(get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].y, get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].y, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].y)));
 
-        pScreenspaceTriangles[triangleIndex].boundingBox.x1 -= 1u;
-        pScreenspaceTriangles[triangleIndex].boundingBox.y1 -= 1u;
-        pScreenspaceTriangles[triangleIndex].boundingBox.x2 += 1u;
-        pScreenspaceTriangles[triangleIndex].boundingBox.y2 += 1u;
+        pScreenspaceTriangles[triangleIndex].boundingBox.x1 = get_max(0, pScreenspaceTriangles[triangleIndex].boundingBox.x1 - 1);
+        pScreenspaceTriangles[triangleIndex].boundingBox.y1 = get_max(0, pScreenspaceTriangles[triangleIndex].boundingBox.y1 - 1);
+        pScreenspaceTriangles[triangleIndex].boundingBox.x2 = get_min((int)width, pScreenspaceTriangles[triangleIndex].boundingBox.x2 + 1);
+        pScreenspaceTriangles[triangleIndex].boundingBox.y2 = get_min((int)height, pScreenspaceTriangles[triangleIndex].boundingBox.y2 + 1);
     }
     
     return true;
@@ -2216,7 +2402,7 @@ bool k15_draw(software_rasterizer_context_t* pContext, uint32_t vertexCount, uin
         void* pDrawCallUniformBufferData = _k15_allocate_from_stack_allocator(pContext->pDrawCallDataAllocator, pUniformBuffer->dataSizeInBytes);
         if( pDrawCallUniformBufferData == nullptr )
         {
-            //k15_remove_from_dynamic_buffer(pDrawCall);
+            //k15_remove_from_dynamic_buffer(&pContext->drawCalls, pDrawCall);
             return false;
         }
 
