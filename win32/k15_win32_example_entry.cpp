@@ -58,6 +58,8 @@ int screenScaleFactor = 1;
 int screenWidth = virtualScreenWidth*screenScaleFactor;
 int screenHeight = virtualScreenHeight*screenScaleFactor;
 
+bool appHasFocus = true;
+
 vector4f_t cameraPos = {0.0f, 0.0f, 2.5f, 1.0f};
 vector4f_t cameraVelocity = {};
 vector2f_t cameraAngles = {};
@@ -744,6 +746,21 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 			cameraVelocity.x = 0.0f;
 		}
 	}
+
+	if(wparam == VK_F1)
+	{
+		printf("camera angles: {%.3f, %.3f} pos: {%.3f, %.3f, %.3f}\n", cameraAngles.x, cameraAngles.y, cameraPos.x, cameraPos.y, cameraPos.z);
+	}
+	
+	if(wparam == VK_F2)
+	{
+		cameraAngles.x = -0.702f;
+		cameraAngles.y = -0.164f;
+		
+		cameraPos.x = -0.584f;
+		cameraPos.y = -0.574f;
+		cameraPos.z = 0.644f;
+	}
 }
 
 void K15_MouseButtonInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -822,6 +839,17 @@ LRESULT CALLBACK K15_WNDPROC(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 	case WM_MBUTTONDOWN:
 	case WM_XBUTTONDOWN:
 		K15_MouseButtonInput(hwnd, message, wparam, lparam);
+		break;
+
+	case WM_ACTIVATE:
+		if(wparam == WA_ACTIVE || wparam == WA_CLICKACTIVE)
+		{
+			appHasFocus = true;
+		}
+		else if(wparam == WA_INACTIVE)
+		{
+			appHasFocus = false;
+		}
 		break;
 
 	case WM_MOUSEMOVE:
@@ -946,12 +974,12 @@ void vertexShader(vertex_shader_input_t* pInOutVertices, uint32_t vertexCount, c
 void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const void* pUniformData)
 {
 	shader_uniform_data_t* pShaderData = (shader_uniform_data_t*)pUniformData;
-	texture_samples_t textureSamples = k15_sample_texture<sample_addressing_mode_t::repeat>(pShaderData->texture, pInOutPixels->vertexAttributes.texcoords, pixelCount);
+	texture_samples_t textureSamples = k15_sample_texture<sample_addressing_mode_t::mirror>(pShaderData->texture, pInOutPixels->vertexAttributes.texcoords, pixelCount);
 	
 	const vector4f_t viewDir = pShaderData->viewDir;
 	const vector4f_t specColor = k15_create_vector4f(1.0f, 1.0f, 1.0f, 1.0f);
 
-#if 1
+#if 0
 	for( uint32_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex )
 	{
 		vector4f_t color = k15_create_vector4f(pInOutPixels->vertexAttributes.positions[pixelIndex].x, pInOutPixels->vertexAttributes.positions[pixelIndex].y, pInOutPixels->vertexAttributes.positions[pixelIndex].z, 1.0f);
@@ -963,6 +991,7 @@ void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const 
 		vector4f_t color = k15_create_vector4f(textureSamples.colors[pixelIndex].x, textureSamples.colors[pixelIndex].y, textureSamples.colors[pixelIndex].z, textureSamples.colors[pixelIndex].w);
 		color = k15_vector4f_hadamard(color, pShaderData->ambientColor);
 
+#if 0
 		for( uint32_t lightIndex = 0; lightIndex < pShaderData->lightCount; ++lightIndex )
 		{
 			const vector4f_t lightPosition = _k15_mul_vector4_matrix44(&pShaderData->lights[lightIndex].position, &pShaderData->viewProjMatrix);
@@ -984,7 +1013,7 @@ void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const 
 			const float distanceNormalized = 1.0f - (pixelToLightSquared / lightRadiusSquared);
 			color = k15_vector4f_clamp01(k15_vector4f_add(color, k15_vector4f_scale(pShaderData->lights[lightIndex].color, distanceNormalized * lightAngle)));
 		}
-
+#endif
 		pInOutPixels->outputColors[pixelIndex] = color;
 	}
 #endif
@@ -1060,11 +1089,14 @@ void doFrame(float deltaTimeInMs)
 
 	modelMatrix.m11 = -1.0f;
 
-	POINT mousePos = {};
-	GetCursorPos(&mousePos);
-	cameraAngles.x -= ( mousePos.x - (screenWidth / 2) ) / 1000.0f;
-	cameraAngles.y -= ( mousePos.y - (screenHeight / 2) ) / 1000.0f;
-	SetCursorPos(screenWidth / 2, screenHeight / 2);
+	if( appHasFocus )
+	{
+		POINT mousePos = {};
+		GetCursorPos(&mousePos);
+		cameraAngles.x -= ( mousePos.x - (screenWidth / 2) ) / 1000.0f;
+		cameraAngles.y -= ( mousePos.y - (screenHeight / 2) ) / 1000.0f;
+		SetCursorPos(screenWidth / 2, screenHeight / 2);
+	}
 
 	const float cameraVelocityScale = 0.002f;
 

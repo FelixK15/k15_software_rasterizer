@@ -33,7 +33,7 @@ struct vector2u_t
 
 struct bounding_box_t
 {
-    int32_t x1, x2, y1, y2;
+    uint32_t x1, x2, y1, y2;
 };
 
 struct vertex_buffer_handle_t
@@ -482,13 +482,20 @@ bool _k15_grow_dynamic_buffer(dynamic_buffer_t<T>* pBuffer, uint32_t newCapacity
     return true;
 }
 
-template<typename T>
-T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
+template<typename T, bool GROW>
+T* k15_base_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
 {
     const uint32_t newTriangleCount = pBuffer->count + elementCount;
     if(newTriangleCount >= pBuffer->capacity)
     {
-        if(!_k15_grow_dynamic_buffer(pBuffer, newTriangleCount))
+        if( GROW )
+        {
+            if(!_k15_grow_dynamic_buffer(pBuffer, newTriangleCount))
+            {
+                return nullptr;
+            }
+        }
+        else
         {
             return nullptr;
         }
@@ -497,6 +504,18 @@ T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementC
     uint32_t oldCount = pBuffer->count;
     pBuffer->count += elementCount;
     return pBuffer->pData + oldCount;
+}
+
+template<typename T>
+T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
+{
+    return k15_base_dynamic_buffer_push_back<T, true>(pBuffer, elementCount);
+}
+
+template<typename T>
+T* _k15_dynamic_buffer_push_back_dont_grow(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
+{
+    return k15_base_dynamic_buffer_push_back<T, false>(pBuffer, elementCount);
 }
 
 template<typename T>
@@ -848,13 +867,13 @@ uint8_t float_to_uint8(float value)
 uint32_t float_to_uint32(float value)
 {
     RuntimeAssert(value >= 0.0f && value <= (float)UINT_MAX);
-    return (uint32_t)value;
+    return (uint32_t)(value + 0.5f);
 }
 
 uint32_t float_to_int32(float value)
 {
     RuntimeAssert(value >= (float)INT_MIN && value <= (float)INT_MAX)
-    return (int32_t)value;
+    return (int32_t)(value + 0.5f);
 }
 
 vector4f_t k15_vector4f_hadamard(vector4f_t a, vector4f_t b)
@@ -1175,7 +1194,41 @@ constexpr vertex_t k15_create_vertex(vector4f_t position, vector4f_t normal, vec
 
 void k15_generate_barycentric_vertices(p* pOutVertex, const vector3f_t* pBarycentricCoordinates, const vertex_t* pTriangleVertices, uint32_t vertexCount)
 {
-    for( uint32_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex )
+    const uint32_t vertexRest = vertexCount % 4;
+    const uint32_t simdVertexCount = vertexCount - vertexRest;
+
+#if 1
+    const __m128 posV0 = _mm_set_ps(pTriangleVertices[0].position.x, pTriangleVertices[0].position.y, pTriangleVertices[0].position.z, pTriangleVertices[0].position.w);
+    const __m128 posV1 = _mm_set_ps(pTriangleVertices[1].position.x, pTriangleVertices[1].position.y, pTriangleVertices[1].position.z, pTriangleVertices[1].position.w);
+    const __m128 posV2 = _mm_set_ps(pTriangleVertices[2].position.x, pTriangleVertices[2].position.y, pTriangleVertices[2].position.z, pTriangleVertices[2].position.w);
+
+    const __m128 uvV0 = _mm_set_ps(pTriangleVertices[0].texcoord.y, pTriangleVertices[0].texcoord.x, pTriangleVertices[0].texcoord.y, pTriangleVertices[0].texcoord.x);
+    const __m128 uvV1 = _mm_set_ps(pTriangleVertices[1].texcoord.y, pTriangleVertices[1].texcoord.x, pTriangleVertices[1].texcoord.y, pTriangleVertices[1].texcoord.x);
+    const __m128 uvV2 = _mm_set_ps(pTriangleVertices[2].texcoord.y, pTriangleVertices[2].texcoord.x, pTriangleVertices[2].texcoord.y, pTriangleVertices[2].texcoord.x);
+
+    const __m128i uvMaskStore = _mm_set_epi32(0x0, 0x0, 0xFFFFFFFF, 0xFFFFFFFF);
+
+    for( uint32_t vertexIndex = 0u; vertexIndex < vertexCount; ++vertexIndex)
+    {
+        const __m128 u = _mm_set1_ps(pBarycentricCoordinates[vertexIndex].x);
+        const __m128 v = _mm_set1_ps(pBarycentricCoordinates[vertexIndex].y);
+        const __m128 w = _mm_set1_ps(pBarycentricCoordinates[vertexIndex].z);
+
+        __m128 pos = _mm_setzero_ps();
+        pos = _mm_fmadd_ps(posV0, u, pos);
+        pos = _mm_fmadd_ps(posV1, v, pos);
+        pos = _mm_fmadd_ps(posV2, w, pos);
+
+        __m128 uv = _mm_setzero_ps();
+        uv = _mm_fmadd_ps(uvV0, u, uv);
+        uv = _mm_fmadd_ps(uvV1, v, uv);
+        uv = _mm_fmadd_ps(uvV2, w, uv);
+
+        _mm_store_ps((float*)&pOutVertex->positions[vertexIndex], pos);
+        _mm_maskstore_ps((float*)&pOutVertex->texcoords[vertexIndex], uvMaskStore, uv);
+    }
+#else
+    for( uint32_t vertexIndex = 0u; vertexIndex < vertexCount; ++vertexIndex )
     {
         const float u = pBarycentricCoordinates[vertexIndex].x;
         const float v = pBarycentricCoordinates[vertexIndex].y;
@@ -1186,6 +1239,12 @@ void k15_generate_barycentric_vertices(p* pOutVertex, const vector3f_t* pBarycen
         pOutVertex->colors[vertexIndex]     = k15_vector4f_add(k15_vector4f_add(k15_vector4f_scale(pTriangleVertices[0].color, u), k15_vector4f_scale(pTriangleVertices[1].color, v)), k15_vector4f_scale(pTriangleVertices[2].color, w));
         pOutVertex->texcoords[vertexIndex]  = k15_vector2f_add(k15_vector2f_add(k15_vector2f_scale(pTriangleVertices[0].texcoord, u), k15_vector2f_scale(pTriangleVertices[1].texcoord, v)), k15_vector2f_scale(pTriangleVertices[2].texcoord, w));
     }
+#endif
+}
+
+float k15_edge_function(vector2f_t a, vector2f_t b, vector2f_t c)
+{
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
 
 void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorBuffer, void* pDepthBuffer, uint32_t colorBufferStride, uint8_t redShift, uint8_t greenShift, uint8_t blueShift)
@@ -1213,42 +1272,43 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
         _k15_draw_line(pColorBuffer, colorBufferStride, &b, &c, 0xFFFFFFFF);
         _k15_draw_line(pColorBuffer, colorBufferStride, &c, &a, 0xFFFFFFFF);
 #else
-        for(uint32_t y = (uint32_t)pTriangle->boundingBox.y1; y < (uint32_t)pTriangle->boundingBox.y2; y += PixelShaderTileSize)
+
+        const vector2f_t v0 = k15_create_vector2f(pTriangle->screenspaceVertexPositions[0].x, pTriangle->screenspaceVertexPositions[0].y);
+        const vector2f_t v1 = k15_create_vector2f(pTriangle->screenspaceVertexPositions[1].x, pTriangle->screenspaceVertexPositions[1].y);
+        const vector2f_t v2 = k15_create_vector2f(pTriangle->screenspaceVertexPositions[2].x, pTriangle->screenspaceVertexPositions[2].y);
+
+        const float triangleArea = k15_edge_function(v2, v1, v0);
+        const float oneOverTriangleArea = 1.0f / triangleArea;
+
+        for(uint32_t y = pTriangle->boundingBox.y1; y < pTriangle->boundingBox.y2; y += PixelShaderTileSize)
         {
-            for(uint32_t x = (uint32_t)pTriangle->boundingBox.x1; x < (uint32_t)pTriangle->boundingBox.x2; x += PixelShaderTileSize)
+            const uint32_t yStep = get_min(PixelShaderTileSize, (pTriangle->boundingBox.y2 - y));
+            const uint32_t tileYEnd = y + yStep;
+
+            for(uint32_t x = pTriangle->boundingBox.x1; x < pTriangle->boundingBox.x2; x += PixelShaderTileSize)
             {   
-                const uint32_t yStep = get_min(PixelShaderTileSize, (pTriangle->boundingBox.y2 - y));
                 const uint32_t xStep = get_min(PixelShaderTileSize, (pTriangle->boundingBox.x2 - x));
-                const uint32_t tileYEnd = y + yStep;
+                const uint32_t tileXEnd = x + xStep;
 
                 uint32_t pixelIndex = 0;
                 for( uint32_t tileY = y; tileY < tileYEnd; ++tileY)
                 {
-                    const uint32_t tileXEnd = x + xStep;
                     for( uint32_t tileX = x; tileX < tileXEnd; ++tileX)
                     {
                         const vector2f_t pixelCoordinates = {(float)tileX, (float)tileY};
 
-                        const vector2f_t v0 = k15_vector2f_sub(k15_create_vector2f(pTriangle->screenspaceVertexPositions[1].x, pTriangle->screenspaceVertexPositions[1].y), k15_create_vector2f(pTriangle->screenspaceVertexPositions[0].x, pTriangle->screenspaceVertexPositions[0].y));
-                        const vector2f_t v1 = k15_vector2f_sub(k15_create_vector2f(pTriangle->screenspaceVertexPositions[2].x, pTriangle->screenspaceVertexPositions[2].y), k15_create_vector2f(pTriangle->screenspaceVertexPositions[0].x, pTriangle->screenspaceVertexPositions[0].y));
-                        const vector2f_t v2 = k15_vector2f_sub(pixelCoordinates, k15_create_vector2f(pTriangle->screenspaceVertexPositions[0].x, pTriangle->screenspaceVertexPositions[0].y));
+                        const float w0 = k15_edge_function(v1, v0, pixelCoordinates);
+                        const float w1 = k15_edge_function(v2, v1, pixelCoordinates);
+                        const float w2 = k15_edge_function(v0, v2, pixelCoordinates);
 
-                        const float d00 = k15_vector2f_dot(v0, v0);
-                        const float d01 = k15_vector2f_dot(v0, v1);
-                        const float d11 = k15_vector2f_dot(v1, v1);
-                        const float d20 = k15_vector2f_dot(v2, v0);
-                        const float d21 = k15_vector2f_dot(v2, v1);
-                        const float denom = d00 * d11 - d01 * d01;
-                        const float v = (d11 * d20 - d01 * d21) / denom;
-                        const float w = (d00 * d21 - d01 * d20) / denom;
-                        const float u = 1.0f - v - w;
-
-                        if( !k15_is_in_range_inclusive(v, 0.0f, 1.0f) ||
-                            !k15_is_in_range_inclusive(w, 0.0f, 1.0f) ||
-                            !k15_is_in_range_inclusive(u, 0.0f, 1.0f) )
+                        if( w0 < 0.0f || w1 < 0.0f || w2 < 0.0f )
                         {
                             continue;
                         }
+
+                        const float u = w0 * oneOverTriangleArea;
+                        const float v = w1 * oneOverTriangleArea;
+                        const float w = w2 * oneOverTriangleArea;
 
                         const float bary_z = 1.0f - (pTriangle->screenspaceVertexPositions[0].z * u + pTriangle->screenspaceVertexPositions[1].z * v + pTriangle->screenspaceVertexPositions[2].z * w);
                         const uint32_t depthBufferIndex = tileX + tileY * colorBufferStride;
@@ -1258,7 +1318,6 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
                         }
 
                         pDepthBufferContent[depthBufferIndex] = bary_z;
-                        
                         barycentricCoordinates[pixelIndex].x = u;
                         barycentricCoordinates[pixelIndex].y = v;
                         barycentricCoordinates[pixelIndex].z = w;
@@ -1266,12 +1325,14 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
                         (uint32_t)pixelShaderInput.screenSpaceX[pixelIndex] = tileX;
                         (uint32_t)pixelShaderInput.screenSpaceY[pixelIndex] = tileY;
                         pixelShaderInput.depth[pixelIndex] = bary_z;
+
                         ++pixelIndex;
                     }
                 }
 
-                k15_generate_barycentric_vertices(&interpolatedVertices, barycentricCoordinates, pTriangle->vertices, pixelIndex);
-                memcpy(&pixelShaderInput.vertexAttributes, &interpolatedVertices, sizeof(interpolatedVertices));
+#if 1
+                k15_generate_barycentric_vertices(&pixelShaderInput.vertexAttributes, barycentricCoordinates, pTriangle->vertices, pixelIndex);
+                //memcpy(&pixelShaderInput.vertexAttributes, &interpolatedVertices, sizeof(interpolatedVertices));
 
                 pixelShader(&pixelShaderInput, pixelIndex, pUniformData);
 
@@ -1285,6 +1346,7 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
                     uint32_t colorMapIndex = pixelShaderInput.screenSpaceX[i] + pixelShaderInput.screenSpaceY[i] * colorBufferStride;
                     pColorBufferContent[colorMapIndex] = color;
                 }
+#endif
                 pixelIndex = 0;
             }
         }
@@ -2048,15 +2110,15 @@ bool k15_project_triangles_into_screenspace(draw_call_triangles_t* pDrawCallTria
         pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].y = (((1.0f + pTriangle->vertices[2].position.y / pTriangle->vertices[2].position.w) / 2.0f) * height);
         pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].z = pTriangle->vertices[2].position.z / pTriangle->vertices[2].position.w;
 
-        pScreenspaceTriangles[triangleIndex].boundingBox.x1 = float_to_int32(get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].x, get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].x, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].x)));
-        pScreenspaceTriangles[triangleIndex].boundingBox.x2 = float_to_int32(get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].x, get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].x, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].x)));
-        pScreenspaceTriangles[triangleIndex].boundingBox.y1 = float_to_int32(get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].y, get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].y, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].y)));
-        pScreenspaceTriangles[triangleIndex].boundingBox.y2 = float_to_int32(get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].y, get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].y, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].y)));
+        pScreenspaceTriangles[triangleIndex].boundingBox.x1 = float_to_uint32(get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].x, get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].x, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].x)));
+        pScreenspaceTriangles[triangleIndex].boundingBox.x2 = float_to_uint32(get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].x, get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].x, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].x)));
+        pScreenspaceTriangles[triangleIndex].boundingBox.y1 = float_to_uint32(get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].y, get_min(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].y, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].y)));
+        pScreenspaceTriangles[triangleIndex].boundingBox.y2 = float_to_uint32(get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[0].y, get_max(pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[1].y, pScreenspaceTriangles[triangleIndex].screenspaceVertexPositions[2].y)));
 
-        pScreenspaceTriangles[triangleIndex].boundingBox.x1 = get_max(0, pScreenspaceTriangles[triangleIndex].boundingBox.x1 - 1);
-        pScreenspaceTriangles[triangleIndex].boundingBox.y1 = get_max(0, pScreenspaceTriangles[triangleIndex].boundingBox.y1 - 1);
-        pScreenspaceTriangles[triangleIndex].boundingBox.x2 = get_min((int)width, pScreenspaceTriangles[triangleIndex].boundingBox.x2 + 1);
-        pScreenspaceTriangles[triangleIndex].boundingBox.y2 = get_min((int)height, pScreenspaceTriangles[triangleIndex].boundingBox.y2 + 1);
+        pScreenspaceTriangles[triangleIndex].boundingBox.x1 = get_max(0u, pScreenspaceTriangles[triangleIndex].boundingBox.x1 - 1u);
+        pScreenspaceTriangles[triangleIndex].boundingBox.y1 = get_max(0u, pScreenspaceTriangles[triangleIndex].boundingBox.y1 - 1u);
+        pScreenspaceTriangles[triangleIndex].boundingBox.x2 = get_min((uint32_t)width, pScreenspaceTriangles[triangleIndex].boundingBox.x2 + 1u);
+        pScreenspaceTriangles[triangleIndex].boundingBox.y2 = get_min((uint32_t)height, pScreenspaceTriangles[triangleIndex].boundingBox.y2 + 1u);
     }
     
     return true;
@@ -2402,7 +2464,6 @@ bool k15_draw(software_rasterizer_context_t* pContext, uint32_t vertexCount, uin
         void* pDrawCallUniformBufferData = _k15_allocate_from_stack_allocator(pContext->pDrawCallDataAllocator, pUniformBuffer->dataSizeInBytes);
         if( pDrawCallUniformBufferData == nullptr )
         {
-            //k15_remove_from_dynamic_buffer(&pContext->drawCalls, pDrawCall);
             return false;
         }
 
