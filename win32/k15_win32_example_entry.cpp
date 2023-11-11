@@ -974,7 +974,7 @@ void vertexShader(vertex_shader_input_t* pInOutVertices, uint32_t vertexCount, c
 void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const void* pUniformData)
 {
 	shader_uniform_data_t* pShaderData = (shader_uniform_data_t*)pUniformData;
-	texture_samples_t textureSamples = k15_sample_texture<sample_addressing_mode_t::repeat>(pShaderData->texture, pInOutPixels->vertexAttributes.texcoords, pixelCount);
+	texture_samples_t textureSamples = k15_sample_texture<sample_addressing_mode_t::mirror>(pShaderData->texture, pInOutPixels->vertexAttributes.texcoords, pixelCount);
 	
 	const vector4f_t viewDir = pShaderData->viewDir;
 	const vector4f_t specColor = k15_create_vector4f(1.0f, 1.0f, 1.0f, 1.0f);
@@ -991,6 +991,7 @@ void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const 
 		vector4f_t color = k15_create_vector4f(textureSamples.colors[pixelIndex].x, textureSamples.colors[pixelIndex].y, textureSamples.colors[pixelIndex].z, textureSamples.colors[pixelIndex].w);
 		color = k15_vector4f_hadamard(color, pShaderData->ambientColor);
 
+#if 0
 		for( uint32_t lightIndex = 0; lightIndex < pShaderData->lightCount; ++lightIndex )
 		{
 			const vector4f_t lightPosition = _k15_mul_vector4_matrix44(&pShaderData->lights[lightIndex].position, &pShaderData->viewProjMatrix);
@@ -1012,7 +1013,7 @@ void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const 
 			const float distanceNormalized = 1.0f - (pixelToLightSquared / lightRadiusSquared);
 			color = k15_vector4f_clamp01(k15_vector4f_add(color, k15_vector4f_scale(pShaderData->lights[lightIndex].color, distanceNormalized * lightAngle)));
 		}
-
+#endif
 		pInOutPixels->outputColors[pixelIndex] = color;
 	}
 #endif
