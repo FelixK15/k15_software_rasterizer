@@ -54,7 +54,6 @@ HBITMAP backBufferBitmap = 0;
 int virtualScreenWidth = 1920;
 int virtualScreenHeight = 1080;
 int screenScaleFactor = 1;
-
 int screenWidth = virtualScreenWidth*screenScaleFactor;
 int screenHeight = virtualScreenHeight*screenScaleFactor;
 
@@ -974,7 +973,7 @@ void vertexShader(vertex_shader_input_t* pInOutVertices, uint32_t vertexCount, c
 void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const void* pUniformData)
 {
 	shader_uniform_data_t* pShaderData = (shader_uniform_data_t*)pUniformData;
-	texture_samples_t textureSamples = k15_sample_texture<sample_addressing_mode_t::mirror>(pShaderData->texture, pInOutPixels->vertexAttributes.texcoords, pixelCount);
+	texture_samples_t textureSamples = k15_sample_texture<sample_addressing_mode_t::clamp>(pShaderData->texture, pInOutPixels->vertexAttributes.texcoords, pixelCount);
 	
 	const vector4f_t viewDir = pShaderData->viewDir;
 	const vector4f_t specColor = k15_create_vector4f(1.0f, 1.0f, 1.0f, 1.0f);
@@ -1051,8 +1050,8 @@ bool setup()
 	shaderData.lights[1].position = k15_create_vector4f(0.0f, 1.0f, 2.0f, 1.0f);
 	shaderData.lights[1].radius = 1.0f;
 
-	//shaderData.ambientColor = k15_create_vector4f(1.0f, 1.0f, 1.0f, 1.0f);
-	shaderData.ambientColor = k15_create_vector4f(0.1f, 0.1f, 0.1f, 1.0f);
+	shaderData.ambientColor = k15_create_vector4f(1.0f, 1.0f, 1.0f, 1.0f);
+	//shaderData.ambientColor = k15_create_vector4f(0.1f, 0.1f, 0.1f, 1.0f);
 
 	//return loadTriangle(pContext, &loadedModel);
 	return loadObjModel(pContext, &loadedModel, "crashbandicoot.obj", "crashbandicoot.mtl", 0.005f);
