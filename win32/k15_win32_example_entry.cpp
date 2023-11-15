@@ -973,7 +973,7 @@ void vertexShader(vertex_shader_input_t* pInOutVertices, uint32_t vertexCount, c
 void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const void* pUniformData)
 {
 	shader_uniform_data_t* pShaderData = (shader_uniform_data_t*)pUniformData;
-	texture_samples_t textureSamples = k15_sample_texture<sample_addressing_mode_t::clamp>(pShaderData->texture, pInOutPixels->vertexAttributes.texcoords, pixelCount);
+	texture_samples_t textureSamples = k15_sample_texture<sample_addressing_mode_t::mirror>(pShaderData->texture, pInOutPixels->vertexAttributes.texcoords, pixelCount);
 	
 	const vector4f_t viewDir = pShaderData->viewDir;
 	const vector4f_t specColor = k15_create_vector4f(1.0f, 1.0f, 1.0f, 1.0f);
