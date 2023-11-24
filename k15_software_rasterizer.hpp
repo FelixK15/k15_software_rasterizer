@@ -96,7 +96,7 @@ struct software_rasterizer_context_init_parameters_t
     uint8_t     colorBufferCount;
 };
 
-constexpr uint32_t PixelShaderTileSize     = 8u;
+constexpr uint32_t PixelShaderTileSize     = 128u;
 constexpr uint32_t PixelShaderInputCount   = PixelShaderTileSize*PixelShaderTileSize;
 constexpr uint32_t VertexShaderInputCount  = 30u;
 
@@ -118,21 +118,23 @@ struct vertex_t
     vector2f_t texcoord;
 };
 
-struct p
-{
-    vector4f_t positions[PixelShaderInputCount];
-    vector4f_t normals[PixelShaderInputCount];
-    vector4f_t colors[PixelShaderInputCount];
-    vector2f_t texcoords[PixelShaderInputCount];
-};
-
 struct pixel_shader_input_t
 {
-    p                           vertexAttributes;
-    vector4f_t                  outputColors[PixelShaderInputCount];
-    float                       depth[PixelShaderInputCount];
-    uint32_t                    screenSpaceX[PixelShaderInputCount];
-    uint32_t                    screenSpaceY[PixelShaderInputCount];
+    float* pVertexData;
+    float* pDepth;
+    uint32_t* pScreenspaceX;
+    uint32_t* pScreenspaceY;
+
+    const void* pUniformData;
+
+    uint32_t pixelCount;
+};
+
+struct pixel_shader_output_t
+{
+    vector4f_t* pColor;
+    const uint32_t* pScreenspaceX;
+    const uint32_t* pScreenspaceY;
 };
 
 struct texture_samples_t
@@ -151,7 +153,7 @@ struct pixel_t
 };
 
 typedef void(*vertex_shader_fnc_t)(vertex_shader_input_t* pInOutVertices, uint32_t vertexCount, const void* pUniformData);
-typedef void(*pixel_shader_fnc_t)(pixel_shader_input_t* pInOutPixel, uint32_t pixelCount, const void* pUniformData);
+typedef void(*pixel_shader_fnc_t)(const pixel_shader_input_t* pPixelShaderInput, pixel_shader_output_t* pPixelShaderOutput, uint32_t pixelCount, const void* pUniformData);
 
 vertex_buffer_handle_t  k15_invalid_vertex_buffer_handle    = {nullptr};
 uniform_buffer_handle_t k15_invalid_uniform_buffer_handle   = {nullptr};
@@ -399,10 +401,17 @@ struct stack_allocator_t
     uint32_t sizeInBytes;
 };
 
+struct barycentric_coordinates_buffer_t
+{
+    float* pU;
+    float* pV;
+};
+
 struct software_rasterizer_context_t
 {
     software_rasterizer_settings_t              settings;
     bitmap_font_t                               font;
+    barycentric_coordinates_buffer_t            barycentricCoordinatesBuffer;
 
     uint8_t                                     colorBufferCount;
     uint8_t                                     currentColorBufferIndex;
@@ -676,6 +685,19 @@ bool _k15_create_stack_allocator(stack_allocator_t** ppStackAllocator, uint32_t 
     return true;
 }
 
+bool _k15_create_barycentric_coordinate_buffer(barycentric_coordinates_buffer_t* pBarycentricCoordinateBuffer, uint32_t coordinateCount)
+{
+    float* pCoordinateBuffer = (float*)malloc(coordinateCount * sizeof(float) * 2u);
+    if( pCoordinateBuffer == nullptr )
+    {
+        return false;
+    }
+
+    pBarycentricCoordinateBuffer->pU = pCoordinateBuffer;
+    pBarycentricCoordinateBuffer->pV = pCoordinateBuffer + coordinateCount;
+    return true;
+}
+
 void _k15_reset_stack_allocator(stack_allocator_t* pStackAllocator)
 {
     pStackAllocator->sizeInBytes = 0;
@@ -854,24 +876,24 @@ void _k15_draw_line(void* pColorBuffer, uint32_t colorBufferStride, const vector
 }
 
 template<typename T>
-bool k15_is_in_range_inclusive(T value, T min, T max)
+inline bool k15_is_in_range_inclusive(T value, T min, T max)
 {
     return value >= min && value <= max;
 }
 
-uint8_t float_to_uint8(float value)
+inline uint8_t float_to_uint8(float value)
 {
     RuntimeAssert(value >= 0.0f && value <= (float)UINT8_MAX);
     return (uint8_t)value;
 }
 
-uint32_t float_to_uint32(float value)
+inline uint32_t float_to_uint32(float value)
 {
     RuntimeAssert(value >= 0.0f && value <= (float)UINT_MAX);
     return (uint32_t)(value + 0.5f);
 }
 
-uint32_t float_to_int32(float value)
+inline uint32_t float_to_int32(float value)
 {
     RuntimeAssert(value >= (float)INT_MIN && value <= (float)INT_MAX)
     return (int32_t)(value + 0.5f);
@@ -1193,12 +1215,12 @@ constexpr vertex_t k15_create_vertex(vector4f_t position, vector4f_t normal, vec
 }
 
 
-void k15_generate_barycentric_vertices(p* pOutVertex, const vector3f_t* pBarycentricCoordinates, const vertex_t* pTriangleVertices, uint32_t vertexCount)
+void k15_generate_barycentric_vertices(pixel_shader_input_t* pOutVertex, barycentric_coordinates_buffer_t barycentricCoordinates, const vertex_t* pTriangleVertices, uint32_t vertexCount)
 {
     const uint32_t vertexRest = vertexCount % 4;
     const uint32_t simdVertexCount = vertexCount - vertexRest;
 
-#if 1
+#if 0
     const __m128 posV0 = _mm_set_ps(pTriangleVertices[0].position.x, pTriangleVertices[0].position.y, pTriangleVertices[0].position.z, pTriangleVertices[0].position.w);
     const __m128 posV1 = _mm_set_ps(pTriangleVertices[1].position.x, pTriangleVertices[1].position.y, pTriangleVertices[1].position.z, pTriangleVertices[1].position.w);
     const __m128 posV2 = _mm_set_ps(pTriangleVertices[2].position.x, pTriangleVertices[2].position.y, pTriangleVertices[2].position.z, pTriangleVertices[2].position.w);
@@ -1228,6 +1250,48 @@ void k15_generate_barycentric_vertices(p* pOutVertex, const vector3f_t* pBarycen
         _mm_store_ps((float*)&pOutVertex->positions[vertexIndex], pos);
         _mm_maskstore_ps((float*)&pOutVertex->texcoords[vertexIndex], uvMaskStore, uv);
     }
+#elif 1
+
+    MemoryPrefetch0(barycentricCoordinates.pU);
+    MemoryPrefetch0(barycentricCoordinates.pV);
+
+    const uint32_t attributeCount = _k15_get_attribute_count(pTriangleVertices->pVertexFormat);
+    for( uint32_t vertexIndex = 0u; vertexIndex < vertexCount; vertexIndex += 4u )
+    {
+        MemoryPrefetch0(pTriangleVertices->pVertexData + vertexIndex * attributeCount);
+
+        const __m128 u = _mm_load_ps(barycentricCoordinates.pU + vertexIndex);
+        const __m128 v = _mm_load_ps(barycentricCoordinates.pV + vertexIndex);
+        const __m128 w = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_add_ps(u, v));
+
+        MemoryPrefetch0(barycentricCoordinates.pU + vertexIndex + 4u);
+        MemoryPrefetch0(barycentricCoordinates.pV + vertexIndex + 4u);
+
+        uint32_t localAttributeIndex = 0u;
+        for( uint32_t attributeIndex = 0u; attributeIndex < VertexAttributeCount; attributeIndex += 4u )
+        {
+            const uint32_t attributeBitFlag = (1 << attributeIndex);
+            if( ( pTriangleVertices->attributeBitMask & attributeBitFlag ) == 0 )
+            {
+                continue;
+            }
+
+            const uint32_t vertexDataIndex = localAttributeIndex * vertexIndex;
+            const __m128 vertexAttribute = _mm_load_ps(pTriangleVertices->pVertexData + vertexDataIndex);
+            MemoryPrefetch0(pTriangleVertices->pVertexData + vertexDataIndex + 4);
+
+            __m128 transformedVertexAttribute = _mm_mul_ps(vertexAttribute, u);
+            transformedVertexAttribute = _mm_fmadd_ps(vertexAttribute, v, transformedVertexAttribute);
+            transformedVertexAttribute = _mm_fmadd_ps(vertexAttribute, w, transformedVertexAttribute);
+            
+            const uint32_t attributesLoaded = get_min(vertexIndex - vertexCount, 4u);
+            const __m128i attributeMask = _mm_cmplt_epi32(_mm_sub_epi32(_mm_set1_epi32(attributesLoaded), _mm_set_epi32(0, 1, 2, 3)), _mm_setzero_si128());
+
+            _mm_maskstore_ps(pOutVertex->pVertexData + vertexDataIndex, attributeMask, transformedVertexAttribute);
+            localAttributeIndex += attributesLoaded;
+        }
+    }
+
 #else
     for( uint32_t vertexIndex = 0u; vertexIndex < vertexCount; ++vertexIndex )
     {
@@ -1248,9 +1312,94 @@ float k15_edge_function(vector2f_t a, vector2f_t b, vector2f_t c)
     return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
 
-void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorBuffer, void* pDepthBuffer, uint32_t colorBufferStride, uint8_t redShift, uint8_t greenShift, uint8_t blueShift)
+void _k15_write_color_to_color_buffer(const pixel_shader_output_t* pPixelShaderOutput, uint32_t pixelCount, uint32_t* pColorBufferContent, uint32_t colorBufferStride, uint8_t redShift, uint8_t greenShift, uint8_t blueShift)
 {
+    MemoryPrefetch0(pPixelShaderOutput->pColor);
+    MemoryPrefetch0(pPixelShaderOutput->pScreenspaceX);
+    MemoryPrefetch0(pPixelShaderOutput->pScreenspaceY);
+
+    const uint32_t restPixelCount = pixelCount & 0x3;
+    const uint32_t widePixelCount = pixelCount - restPixelCount;
+
+    for( uint32_t pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += 4u)
+    {
+        const uint8_t red[4u] = {
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 0].x * 255.f),
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 1].x * 255.f),
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 2].x * 255.f),
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 3].x * 255.f),
+        };
+
+        const uint8_t green[4u] = {
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 0].y * 255.f),
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 1].y * 255.f),
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 2].y * 255.f),
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 3].y * 255.f),
+        };
+
+        const uint8_t blue[4u] = {
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 0].z * 255.f),
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 1].z * 255.f),
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 2].z * 255.f),
+            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 3].z * 255.f),
+        };
+        
+        const uint32_t colors[4u] = {
+            (uint32_t)(red[0] << redShift | green[0] << greenShift | blue[0] << blueShift),
+            (uint32_t)(red[1] << redShift | green[1] << greenShift | blue[1] << blueShift),
+            (uint32_t)(red[2] << redShift | green[2] << greenShift | blue[2] << blueShift),
+            (uint32_t)(red[3] << redShift | green[3] << greenShift | blue[3] << blueShift),
+        };
+
+        const uint32_t colorMapIndices[4u] = {
+            pPixelShaderOutput->pScreenspaceX[pixelIndex + 0] + pPixelShaderOutput->pScreenspaceY[pixelIndex + 0] * colorBufferStride,
+            pPixelShaderOutput->pScreenspaceX[pixelIndex + 1] + pPixelShaderOutput->pScreenspaceY[pixelIndex + 1] * colorBufferStride,
+            pPixelShaderOutput->pScreenspaceX[pixelIndex + 2] + pPixelShaderOutput->pScreenspaceY[pixelIndex + 2] * colorBufferStride,
+            pPixelShaderOutput->pScreenspaceX[pixelIndex + 3] + pPixelShaderOutput->pScreenspaceY[pixelIndex + 3] * colorBufferStride,
+        };
+
+        pColorBufferContent[colorMapIndices[0]] = colors[0];
+        pColorBufferContent[colorMapIndices[1]] = colors[1];
+        pColorBufferContent[colorMapIndices[2]] = colors[2];
+        pColorBufferContent[colorMapIndices[3]] = colors[3];
+    }
+
+    for(uint32_t pixelIndex = widePixelCount; pixelIndex < pixelCount; ++pixelIndex)
+    {
+        const uint8_t red   = float_to_uint8(pPixelShaderOutput->pColor[pixelIndex].x * 255.f);
+        const uint8_t green = float_to_uint8(pPixelShaderOutput->pColor[pixelIndex].y * 255.f);
+        const uint8_t blue  = float_to_uint8(pPixelShaderOutput->pColor[pixelIndex].z * 255.f);
+
+        const uint32_t color = red << redShift | green << greenShift | blue << blueShift;
+        const uint32_t colorMapIndex = pPixelShaderOutput->pScreenspaceX[pixelIndex] + pPixelShaderOutput->pScreenspaceY[pixelIndex] * colorBufferStride;
+        pColorBufferContent[colorMapIndex] = color;
+    }
+}
+
+template<bool DEPTH_WRITE_ENABLED>
+void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, barycentric_coordinates_buffer_t barycentricCoordinates, void* pColorBuffer, void* pDepthBuffer, uint32_t colorBufferStride, uint8_t redShift, uint8_t greenShift, uint8_t blueShift)
+{
+    constexpr alignas(16) const uint32_t outputBitMaskLUT[16][4] = {
+        {0x00000000, 0x00000000, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
+        {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
+        {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF}
+    };
+
     pixel_shader_input_t pixelShaderInput = {};
+    pixel_shader_output_t pixelShaderOutput = {};
 
     const void* pUniformData = pDrawCallTriangles->pUniformData;
     pixel_shader_fnc_t pixelShader = pDrawCallTriangles->pixelShader;
@@ -1258,9 +1407,9 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
     uint32_t* pColorBufferContent = (uint32_t*)pColorBuffer;
     float* pDepthBufferContent = (float*)pDepthBuffer;
 
-    vector3f_t barycentricCoordinates[PixelShaderInputCount] = {};
     vertex_t   triangleVertices[PixelShaderInputCount * 3] = {};
 
+    const vertex_format_t* pVertexFormat = pDrawCallTriangles->pVertexFormat;
     for(uint32_t triangleIndex = 0; triangleIndex < pDrawCallTriangles->screenspaceTriangleCount; ++triangleIndex)
     {
         const screenspace_triangle_t* pTriangle = pDrawCallTriangles->pScreenspaceTriangles + triangleIndex;
@@ -1274,6 +1423,7 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
 #else
 
 #define USE_SSE
+#define USE_EARLY_OUT
 //#define USE_TEST_CODE
 
         const vector2f_t v0 = k15_create_vector2f(pTriangle->screenspaceVertexPositions[0].x, pTriangle->screenspaceVertexPositions[0].y);
@@ -1283,12 +1433,6 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
         const float oneOverTriangleArea = 1.0f / triangleArea;
 
 #ifdef USE_SSE
-        const __m128 zero = _mm_set1_ps(0.0f);
-        const __m128 one = _mm_set1_ps(1.0f);
-        
-        const __m128i allBits = _mm_set1_epi32(0xFFFFFFFF);
-        const __m128i noBits = _mm_set1_epi32(0);
-
         const __m128 v0WideX = _mm_set_ps1(v0.x);
         const __m128 v0WideY = _mm_set_ps1(v0.y);
         const __m128 v1WideX = _mm_set_ps1(v1.x);
@@ -1306,7 +1450,7 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
         const __m128 edge1Term2 = _mm_sub_ps(v1WideY, v2WideY);
         
         const __m128 triangleAreaWide = _mm_fmsub_ps(_mm_sub_ps(v1WideX, v2WideX), _mm_sub_ps(v0WideY, v2WideY), _mm_mul_ps(_mm_sub_ps(v1WideY, v2WideY), _mm_sub_ps(v0WideX, v2WideX)));
-        const __m128 oneOverTriangleAreaWide = _mm_div_ps(one, triangleAreaWide);
+        const __m128 oneOverTriangleAreaWide = _mm_div_ps(_mm_set1_ps(1.0f), triangleAreaWide);
 
 #endif
         for(uint32_t y = pTriangle->boundingBox.y1; y < pTriangle->boundingBox.y2; y += PixelShaderTileSize)
@@ -1360,6 +1504,8 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
 
                         const int pixelCoverageMaskSelector = 32 - (4u - get_min(4u, tileXEnd - tileX) * 8);
                         const uint32_t depthBufferOffsetInBytes = tileX + tileY * colorBufferStride;
+                        MemoryPrefetch0(pDepthBufferContent + depthBufferOffsetInBytes);
+
                         const __m128i pixelCoordinatesX = _mm_add_epi32(_mm_set1_epi32(tileX), _mm_set_epi32(3, 2, 1, 0));
                         const __m128i pixelCoordinatesY = _mm_set1_epi32(tileY);
 
@@ -1369,24 +1515,25 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
                         const __m128 edge0Term1 = _mm_sub_ps(tileYWide, v1WideY);
                         const __m128 edge0Term3 = _mm_sub_ps(tileXWide, v1WideX);
                         const __m128 w0Wide     = _mm_fmsub_ps(edge0Term0, edge0Term1, _mm_mul_ps(edge0Term2, edge0Term3));
+                        const __m128i w0NegMask = _mm_castps_si128(_mm_cmplt_ps(w0Wide, _mm_setzero_ps()));
 
                         const __m128 edge1Term1 = _mm_sub_ps(tileYWide, v2WideY);
                         const __m128 edge1Term3 = _mm_sub_ps(tileXWide, v2WideX);
                         const __m128 w1Wide     = _mm_fmsub_ps(edge1Term0, edge1Term1, _mm_mul_ps(edge1Term2, edge1Term3));
-                        const __m128 w2Wide     = _mm_sub_ps(triangleAreaWide, _mm_add_ps(w0Wide, w1Wide));
+                        const __m128i w1NegMask = _mm_castps_si128(_mm_cmplt_ps(w1Wide,  _mm_setzero_ps()));
 
-                        const __m128i w0NegMask = _mm_castps_si128(_mm_cmplt_ps(w0Wide, zero));
-                        const __m128i w1NegMask = _mm_castps_si128(_mm_cmplt_ps(w1Wide, zero));
-                        const __m128i w2NegMask = _mm_castps_si128(_mm_cmplt_ps(w2Wide, zero));
+                        const __m128 w2Wide     = _mm_sub_ps(triangleAreaWide, _mm_add_ps(w0Wide, w1Wide));
+                        const __m128i w2NegMask = _mm_castps_si128(_mm_cmplt_ps(w2Wide,  _mm_setzero_ps()));
 
                         const __m128i pixelMask = _mm_or_si128(_mm_or_si128(w0NegMask, w1NegMask), w2NegMask);
                         const __m128i pixelCoverageMask = _mm_srai_epi32(pixelMask, pixelCoverageMaskSelector);
+
                         if(_mm_test_all_ones(pixelMask) == 1)
                         {
                             continue;
                         }
 
-                        const __m128i invPixelMask = _mm_andnot_si128(pixelMask, allBits);
+                        const __m128i invPixelMask = _mm_andnot_si128(pixelMask, _mm_set1_epi32(0xFFFFFFFF));
 
 #ifdef USE_TEST_CODE
                         const float u[] = {
@@ -1419,122 +1566,55 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, void* pColorB
 #endif
                         const __m128 uWide = _mm_mul_ps(w0Wide, oneOverTriangleAreaWide);
                         const __m128 vWide = _mm_mul_ps(w1Wide, oneOverTriangleAreaWide);
-                        const __m128 wWide = _mm_sub_ps(one, _mm_add_ps(uWide, vWide));
+                        const __m128 wWide = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_add_ps(uWide, vWide));
 
-                        const __m128 newDepthBufferZ = _mm_sub_ps(one, _mm_fmadd_ps(v0WideZ, uWide, _mm_fmadd_ps(v1WideZ, vWide, _mm_mul_ps(v2WideZ, wWide))));
+                        const __m128 newDepthBufferZ = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_fmadd_ps(v0WideZ, uWide, _mm_fmadd_ps(v1WideZ, vWide, _mm_mul_ps(v2WideZ, wWide))));
                         const __m128 oldDepthBufferZ = _mm_load_ps(pDepthBufferContent + depthBufferOffsetInBytes);
 
                         __m128i depthBufferMask = _mm_castps_si128(_mm_cmpgt_ps(newDepthBufferZ, oldDepthBufferZ));
                         depthBufferMask = _mm_and_si128(depthBufferMask, invPixelMask);
 
-                        const __m128 depthBufferZ = _mm_blendv_ps(oldDepthBufferZ, newDepthBufferZ, _mm_castsi128_ps(depthBufferMask));
-                        _mm_store_ps(pDepthBufferContent + depthBufferOffsetInBytes, depthBufferZ);
-
-                        if(depthBufferMask.m128i_u32[0] == 0xFFFFFFFF)
+                        if( DEPTH_WRITE_ENABLED )
                         {
-                            pixelShaderInput.screenSpaceX[pixelIndex] = pixelCoordinatesX.m128i_u32[0];
-                            pixelShaderInput.screenSpaceY[pixelIndex] = pixelCoordinatesY.m128i_u32[0];
-
-                            barycentricCoordinates[pixelIndex].x = vWide.m128_f32[0];
-                            barycentricCoordinates[pixelIndex].y = wWide.m128_f32[0];
-                            barycentricCoordinates[pixelIndex].z = uWide.m128_f32[0];
-                            pixelIndex++;
-                        }
-
-                        if(depthBufferMask.m128i_u32[1] == 0xFFFFFFFF)
-                        {
-                            pixelShaderInput.screenSpaceX[pixelIndex] = pixelCoordinatesX.m128i_u32[1];
-                            pixelShaderInput.screenSpaceY[pixelIndex] = pixelCoordinatesY.m128i_u32[1];
-
-                            barycentricCoordinates[pixelIndex].x = vWide.m128_f32[1];
-                            barycentricCoordinates[pixelIndex].y = wWide.m128_f32[1];
-                            barycentricCoordinates[pixelIndex].z = uWide.m128_f32[1];
-                            pixelIndex++;
-                        }
-
-                        if(depthBufferMask.m128i_u32[2] == 0xFFFFFFFF)
-                        {
-                            pixelShaderInput.screenSpaceX[pixelIndex] = pixelCoordinatesX.m128i_u32[2];
-                            pixelShaderInput.screenSpaceY[pixelIndex] = pixelCoordinatesY.m128i_u32[2];
-
-                            barycentricCoordinates[pixelIndex].x = vWide.m128_f32[2];
-                            barycentricCoordinates[pixelIndex].y = wWide.m128_f32[2];
-                            barycentricCoordinates[pixelIndex].z = uWide.m128_f32[2];
-                            pixelIndex++;
-                        }
-
-                        if(depthBufferMask.m128i_u32[3] == 0xFFFFFFFF)
-                        {
-                            pixelShaderInput.screenSpaceX[pixelIndex] = pixelCoordinatesX.m128i_u32[3];
-                            pixelShaderInput.screenSpaceY[pixelIndex] = pixelCoordinatesY.m128i_u32[3];
-
-                            barycentricCoordinates[pixelIndex].x = vWide.m128_f32[3];
-                            barycentricCoordinates[pixelIndex].y = wWide.m128_f32[3];
-                            barycentricCoordinates[pixelIndex].z = uWide.m128_f32[3];
-                            pixelIndex++;
-                        }
-                    }
-#else
-                    for( uint32_t tileX = x; tileX < tileXEnd; ++tileX)
-                    {
-                        const vector2f_t pixelCoordinates = {(float)tileX, (float)tileY};
-
-                        const float w0 = k15_edge_function(v1, v0, pixelCoordinates);
-                        const float w1 = k15_edge_function(v2, v1, pixelCoordinates);
-                        const float w2 = k15_edge_function(v0, v2, pixelCoordinates);
-
-                        if( w0 < 0.0f || w1 < 0.0f || w2 < 0.0f )
-                        {
-                            continue;
-                        }
-
-                        const float u = w0 * oneOverTriangleArea;
-                        const float v = w1 * oneOverTriangleArea;
-                        const float w = w2 * oneOverTriangleArea;
-
-                        const float bary_z = 1.0f - (pTriangle->screenspaceVertexPositions[0].z * u + pTriangle->screenspaceVertexPositions[1].z * v + pTriangle->screenspaceVertexPositions[2].z * w);
-                        const uint32_t depthBufferIndex = tileX + tileY * colorBufferStride;
-                        if( pDepthBufferContent[depthBufferIndex] >= bary_z )
-                        {
-                            continue;
-                        }
-
-                        pDepthBufferContent[depthBufferIndex] = bary_z;
-
 #if 0
-                        barycentricCoordinates[pixelIndex].x = u;
-                        barycentricCoordinates[pixelIndex].y = v;
-                        barycentricCoordinates[pixelIndex].z = w;
+                            _mm_maskstore_ps(pDepthBufferContent + depthBufferOffsetInBytes, depthBufferMask, newDepthBufferZ);
 #else
-                        barycentricCoordinates[pixelIndex].x = v;
-                        barycentricCoordinates[pixelIndex].y = w;
-                        barycentricCoordinates[pixelIndex].z = u;
+                            const __m128 depthBufferZ = _mm_blendv_ps(oldDepthBufferZ, newDepthBufferZ, _mm_castsi128_ps(depthBufferMask));
+                            _mm_store_ps(pDepthBufferContent + depthBufferOffsetInBytes, depthBufferZ);
 #endif
-                        (uint32_t)pixelShaderInput.screenSpaceX[pixelIndex] = tileX;
-                        (uint32_t)pixelShaderInput.screenSpaceY[pixelIndex] = tileY;
-                        pixelShaderInput.depth[pixelIndex] = bary_z;
+                        }
 
-                        ++pixelIndex;
+                        //FK: Extract 4-bit bit mask from depthBufferMask
+                        __m128i pixelBits = _mm_srl_epi32(depthBufferMask, _mm_set1_epi32(31));
+                        pixelBits = _mm_shl_epi32(pixelBits, _mm_set_epi32(0, 1, 2, 3));
+
+                        int outputMaskLUTIndex = _mm_extract_epi32(pixelBits, 0);
+                        outputMaskLUTIndex |= _mm_extract_epi32(pixelBits, 1);
+                        outputMaskLUTIndex |= _mm_extract_epi32(pixelBits, 2);
+                        outputMaskLUTIndex |= _mm_extract_epi32(pixelBits, 3);
+
+                        RuntimeAssert(outputMaskLUTIndex < 16);
+                        __m128i outputMask = _mm_load_si128((const __m128i*)(outputBitMaskLUT[outputMaskLUTIndex]));
+
+                        _mm_maskstore_epi32((int*)(pixelShaderInput.pScreenspaceX + pixelIndex), outputMask, pixelCoordinatesX);
+                        _mm_maskstore_epi32((int*)(pixelShaderInput.pScreenspaceY + pixelIndex), outputMask, pixelCoordinatesY);
+                        _mm_maskstore_ps((barycentricCoordinates.pU + pixelIndex), outputMask, vWide);
+                        _mm_maskstore_ps((barycentricCoordinates.pV + pixelIndex), outputMask, wWide);
+
+                        const uint32_t pixelAddedThisIteration = __popcnt(outputMaskLUTIndex);
+                        pixelIndex += pixelAddedThisIteration;
                     }
-#endif
                 }
 
 #if 1
-                k15_generate_barycentric_vertices(&pixelShaderInput.vertexAttributes, barycentricCoordinates, pTriangle->vertices, pixelIndex);
-                pixelShader(&pixelShaderInput, pixelIndex, pUniformData);
-
-                for( uint32_t i = 0; i < pixelIndex; ++i)
-                {
-                    const uint8_t red   = float_to_uint8(clamp(pixelShaderInput.outputColors[i].x, 0.0f, 1.0f) * 255.f);
-                    const uint8_t green = float_to_uint8(clamp(pixelShaderInput.outputColors[i].y, 0.0f, 1.0f) * 255.f);
-                    const uint8_t blue  = float_to_uint8(clamp(pixelShaderInput.outputColors[i].z, 0.0f, 1.0f) * 255.f);
-
-                    const uint32_t color = red << redShift | green << greenShift | blue << blueShift;
-                    uint32_t colorMapIndex = pixelShaderInput.screenSpaceX[i] + pixelShaderInput.screenSpaceY[i] * colorBufferStride;
-                    pColorBufferContent[colorMapIndex] = color;
-                }
+                const uint32_t pixelCount = pixelIndex;
+                k15_generate_barycentric_vertices(&pixelShaderInput.vertexAttributes, barycentricCoordinates, pTriangle->vertices, pixelCount);
+                pixelShader(&pixelShaderInput, &pixelShaderOutput, pixelCount, pUniformData);
+                _k15_write_color_to_color_buffer(&pixelShaderOutput, pixelCount, pColorBufferContent, colorBufferStride, redShift, greenShift, blueShift);
+#endif
 #endif
                 pixelIndex = 0;
+                
             }
         }
 #endif
@@ -1685,6 +1765,11 @@ bool k15_create_software_rasterizer_context(software_rasterizer_context_t** pOut
     }
 
     if(!_k15_create_stack_allocator(&pContext->pDrawCallDataAllocator, DefaultUniformDataStackAllocatorSizeInBytes))
+    {
+        return false;
+    }
+
+    if(!_k15_create_barycentric_coordinate_buffer(&pContext->barycentricCoordinatesBuffer, PixelShaderInputCount))
     {
         return false;
     }
@@ -2427,7 +2512,7 @@ void k15_draw_frame(software_rasterizer_context_t* pContext)
             continue;
         }
 
-        k15_draw_triangles(&drawCallTriangles, pContext->pColorBuffer[pContext->currentColorBufferIndex], pContext->pDepthBuffer[pContext->currentColorBufferIndex], pContext->backBufferStride, pContext->redShift, pContext->greenShift, pContext->blueShift);
+        k15_draw_triangles(&drawCallTriangles, pContext->barycentricCoordinatesBuffer, pContext->pColorBuffer[pContext->currentColorBufferIndex], pContext->pDepthBuffer[pContext->currentColorBufferIndex], pContext->backBufferStride, pContext->redShift, pContext->greenShift, pContext->blueShift);
 
         pContext->triangles.count = 0;
         pContext->visibleTriangles.count = 0;
