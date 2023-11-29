@@ -1,5 +1,6 @@
 win32/build
 win32/*.obj
 win32/*.pdb
+*.bat.bak
 .cl_path.txt
 *.cached_path
