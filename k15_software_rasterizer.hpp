@@ -2,13 +2,6 @@
 #define K15_SOFTWARE_RASTERIZER_INCLUDE
 
 #include <stdint.h>
-#include <stdarg.h>
-#include <string.h>
-#include <stdio.h>
-#include <malloc.h>
-
-#include <math.h>
-
 #include "k15_font.hpp"
 
 struct vector4f_t
@@ -87,7 +80,8 @@ struct software_rasterizer_context_init_parameters_t
 {
     uint32_t    backBufferWidth;
     uint32_t    backBufferHeight;
-    uint32_t    backBufferStride;
+    uint32_t    colorBufferStride;
+    uint32_t    depthBufferStride;
     uint8_t     redShift;
     uint8_t     greenShift;
     uint8_t     blueShift;
@@ -96,7 +90,7 @@ struct software_rasterizer_context_init_parameters_t
     uint8_t     colorBufferCount;
 };
 
-constexpr uint32_t PixelShaderTileSize     = 128u;
+constexpr uint32_t PixelShaderTileSize     = 256u;
 constexpr uint32_t PixelShaderInputCount   = PixelShaderTileSize*PixelShaderTileSize;
 constexpr uint32_t VertexShaderInputCount  = 30u;
 
@@ -118,28 +112,30 @@ struct vertex_t
     vector2f_t texcoord;
 };
 
+struct stack_allocator_t;
+
 struct pixel_shader_input_t
 {
-    float* pVertexData;
-    float* pDepth;
-    uint32_t* pScreenspaceX;
-    uint32_t* pScreenspaceY;
+    stack_allocator_t*  pStackAllocator;
+    vertex_t*           pVertexData;
+    float*              pDepth;
+    uint32_t*           pScreenspaceX;
+    uint32_t*           pScreenspaceY;
+    const void*         pUniformData;
 
-    const void* pUniformData;
-
-    uint32_t pixelCount;
+    uint32_t            pixelCount;
 };
 
 struct pixel_shader_output_t
 {
-    vector4f_t* pColor;
+    vector4f_t*     pColor;
     const uint32_t* pScreenspaceX;
     const uint32_t* pScreenspaceY;
 };
 
 struct texture_samples_t
 {
-    vector4f_t colors[PixelShaderInputCount];
+    vector4f_t* pColors;
 };
 
 struct pixel_t
@@ -179,7 +175,7 @@ bool                                            k15_is_valid_texture(const textu
 
 vertex_shader_handle_t                          k15_create_vertex_shader(software_rasterizer_context_t* pContext, vertex_shader_fnc_t vertexShaderFnc);
 pixel_shader_handle_t                           k15_create_pixel_shader(software_rasterizer_context_t* pContext, pixel_shader_fnc_t vertexShaderFnc);
-vertex_buffer_handle_t                          k15_create_vertex_buffer(software_rasterizer_context_t* pContext, uint32_t vertexSizeInBytes, const void* pVertexData, uint32_t vertexDataSizeInBytes);
+vertex_buffer_handle_t                          k15_create_vertex_buffer(software_rasterizer_context_t* pContext, uint32_t vertexSizeInBytes, const vertex_t* pVertexData);
 uniform_buffer_handle_t                         k15_create_uniform_buffer(software_rasterizer_context_t* pContext, uint32_t uniformBufferSizeInBytes);
 texture_handle_t                                k15_create_texture(software_rasterizer_context_t* pContext, const char* pName, uint32_t width, uint32_t height, uint32_t stride, uint8_t componentCount, const void* pTextureData);
 
@@ -193,7 +189,7 @@ void                                            k15_bind_texture(software_raster
 bool                                            k15_draw(software_rasterizer_context_t* pContext, uint32_t vertexCount);
 
 template<sample_addressing_mode_t ADDRESSING_MODE>
-texture_samples_t                               k15_sample_texture(texture_handle_t texture, vector2f_t* pTexcoords, uint32_t texcoordCount);
+texture_samples_t                               k15_sample_texture(texture_handle_t texture, const pixel_shader_input_t* pPixelShaderInput, uint32_t texcoordCount);
 
 constexpr vertex_t                              k15_create_vertex(vector4f_t position, vector4f_t normal, vector4f_t color, vector2f_t texcoord);
 
@@ -221,13 +217,23 @@ constexpr vertex_t                              k15_create_vertex(vector4f_t pos
 #define CompiletimeAssert(x)        static_assert(x)
 #define RuntimeAssertMsg(x, msg)    RuntimeAssert(x)
 #define UnusedVariable(x)           (void)(x)
+#define MultiplyBy2(x)              ((x)<<1)
 
 #define get_min(a,b) (a)>(b)?(b):(a)
 #define get_max(a,b) (a)>(b)?(a):(b)
 
 #define clamp(v, min, max) (v)>(max)?(max):(v)<(min)?(min):(v)
+#define clamp01f(v) clamp(v, 0.0f, 1.0f)
+
+#define internal static
 
 #include <limits.h>
+#include <stddef.h>
+#include <stdarg.h>
+#include <string.h>
+#include <stdio.h>
+#include <malloc.h>
+#include <math.h>
 
 constexpr uint32_t MaxColorBuffer                               = 3u;
 constexpr uint32_t DefaultTriangleBufferCapacity                = 1024u;
@@ -246,18 +252,74 @@ constexpr uint32_t DefaultUniformDataStackAllocatorSizeInBytes  = 1024u * 1024u;
 
 constexpr float pi = 3.141f;
 
-constexpr matrix4x4f_t IdentityMatrix4x4[] = {
+internal constexpr const matrix4x4f_t IdentityMatrix4x4[] = {
     1.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 1.0f, 0.0f, 0.0f,
     0.0f, 0.0f, 1.0f, 0.0f,
     0.0f, 0.0f, 0.0f, 1.0f
 };
 
+internal constexpr alignas(16) const uint32_t OutputBitMaskLUT[16][4] = {
+    {0x00000000, 0x00000000, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
+    {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
+    {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF}
+};
+
+internal constexpr const uint32_t ShuffleBitMaskLUT[16][4] = {
+    #if 1
+    {0b00, 0b00, 0b00, 0b00}, //0000
+    {0b00, 0b00, 0b00, 0b00}, //1000
+    {0b01, 0b00, 0b00, 0b00}, //0100
+    {0b00, 0b01, 0b00, 0b00}, //1100
+    {0b10, 0b00, 0b00, 0b00}, //0010
+    {0b00, 0b10, 0b00, 0b00}, //1010
+    {0b01, 0b10, 0b00, 0b00}, //0110
+    {0b00, 0b01, 0b10, 0b00}, //1110
+    {0b11, 0b00, 0b00, 0b00}, //0001
+    {0b00, 0b11, 0b00, 0b00}, //1001
+    {0b01, 0b11, 0b00, 0b00}, //0101
+    {0b00, 0b01, 0b11, 0b00}, //1101
+    {0b10, 0b11, 0b00, 0b00}, //0011
+    {0b00, 0b10, 0b11, 0b00}, //1011
+    {0b01, 0b10, 0b11, 0b00}, //0111
+    {0b00, 0b01, 0b10, 0b11}  //1111
+    #else
+    {0b00, 0b01, 0b10, 0b11}, //0000
+    {0b11, 0b01, 0b10, 0b11}, //0001
+    {0b10, 0b01, 0b11, 0b00}, //0010
+    {0b01, 0b00, 0b10, 0b11}, //0011
+    {0b01, 0b11, 0b10, 0b00}, //0100
+    {0b00, 0b10, 0b01, 0b11}, //0101
+    {0b10, 0b10, 0b11, 0b11}, //0110
+    {0b00, 0b01, 0b10, 0b11}, //0111
+    {0b11, 0b10, 0b01, 0b00}, //1000
+    {0b10, 0b01, 0b00, 0b11}, //1001
+    {0b10, 0b01, 0b11, 0b00}, //1010
+    {0b01, 0b00, 0b10, 0b11}, //1011
+    {0b10, 0b11, 0b01, 0b00}, //1100
+    {0b01, 0b10, 0b00, 0b11}, //1101
+    {0b01, 0b10, 0b11, 0b00}, //1110
+    {0b11, 0b10, 0b01, 0b00}  //1111
+    #endif
+};
+
 enum vertex_id_t : uint32_t
 {
     position,
     color,
-
 };
 
 struct vertex_buffer_t
@@ -314,9 +376,9 @@ struct triangle_t
 
 struct screenspace_triangle_t
 {
-    vector3f_t      screenspaceVertexPositions[3];
-    vertex_t        vertices[3];
-    bounding_box_t  boundingBox;
+                vector3f_t      screenspaceVertexPositions[3];
+    alignas(16) vertex_t        vertices[3];
+                bounding_box_t  boundingBox;
 };
 
 template<typename T>
@@ -423,7 +485,8 @@ struct software_rasterizer_context_t
 
     uint32_t                                    backBufferWidth;
     uint32_t                                    backBufferHeight;
-    uint32_t                                    backBufferStride;
+    uint32_t                                    colorBufferStride;
+    uint32_t                                    depthBufferStride;
 
     void*                                       pColorBuffer[MaxColorBuffer];
     void*                                       pDepthBuffer[MaxColorBuffer];
@@ -437,6 +500,9 @@ struct software_rasterizer_context_t
 
     block_allocator_t*                          pUniformDataAllocator;
     stack_allocator_t*                          pDrawCallDataAllocator;
+
+    pixel_shader_input_t                        bufferedPixelShaderInput;
+    pixel_shader_output_t                       bufferedPixelShaderOutput;
 
     dynamic_buffer_t<draw_call_t>               drawCalls;
 
@@ -454,7 +520,7 @@ struct software_rasterizer_context_t
 };
 
 template<typename T>
-bool _k15_create_dynamic_buffer(dynamic_buffer_t<T>* pOutBuffer, uint32_t initialCapacity)
+internal bool _k15_create_dynamic_buffer(dynamic_buffer_t<T>* pOutBuffer, uint32_t initialCapacity)
 {
     pOutBuffer->pData = (T*)malloc(initialCapacity * sizeof(T));
     if(pOutBuffer->pData == nullptr)
@@ -469,7 +535,7 @@ bool _k15_create_dynamic_buffer(dynamic_buffer_t<T>* pOutBuffer, uint32_t initia
 }
 
 template<typename T>
-bool _k15_grow_dynamic_buffer(dynamic_buffer_t<T>* pBuffer, uint32_t newCapacity)
+internal bool _k15_grow_dynamic_buffer(dynamic_buffer_t<T>* pBuffer, uint32_t newCapacity)
 {
     if(pBuffer->capacity > newCapacity)
     {
@@ -493,7 +559,7 @@ bool _k15_grow_dynamic_buffer(dynamic_buffer_t<T>* pBuffer, uint32_t newCapacity
 }
 
 template<typename T, bool GROW>
-T* k15_base_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
+internal T* _k15_base_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
 {
     const uint32_t newTriangleCount = pBuffer->count + elementCount;
     if(newTriangleCount >= pBuffer->capacity)
@@ -517,19 +583,19 @@ T* k15_base_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elem
 }
 
 template<typename T>
-T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
+internal T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
 {
-    return k15_base_dynamic_buffer_push_back<T, true>(pBuffer, elementCount);
+    return _k15_base_dynamic_buffer_push_back<T, true>(pBuffer, elementCount);
 }
 
 template<typename T>
-T* _k15_dynamic_buffer_push_back_dont_grow(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
+internal T* _k15_dynamic_buffer_push_back_dont_grow(dynamic_buffer_t<T>* pBuffer, uint32_t elementCount)
 {
-    return k15_base_dynamic_buffer_push_back<T, false>(pBuffer, elementCount);
+    return _k15_base_dynamic_buffer_push_back<T, false>(pBuffer, elementCount);
 }
 
 template<typename T>
-T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, const T* pValues, uint32_t elementCount)
+internal T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, const T* pValues, uint32_t elementCount)
 {
     const uint32_t newTriangleCount = pBuffer->count + elementCount;
     if(newTriangleCount >= pBuffer->capacity)
@@ -548,7 +614,7 @@ T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, const T* pValues,
 }
 
 template<typename T>
-T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, T value)
+internal T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, T value)
 {
     T* pValue = _k15_dynamic_buffer_push_back(pBuffer, 1u);
     if(pValue == nullptr)
@@ -561,7 +627,7 @@ T* _k15_dynamic_buffer_push_back(dynamic_buffer_t<T>* pBuffer, T value)
 }
 
 template<typename T>
-void _k15_destroy_dynamic_buffer(dynamic_buffer_t<T>* pBuffer)
+internal void _k15_destroy_dynamic_buffer(dynamic_buffer_t<T>* pBuffer)
 {
     free(pBuffer->pData);
     pBuffer->pData = nullptr;
@@ -570,7 +636,7 @@ void _k15_destroy_dynamic_buffer(dynamic_buffer_t<T>* pBuffer)
 }
 
 template<typename T>
-T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer, uint32_t elementCount)
+internal T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer, uint32_t elementCount)
 {
     const uint32_t bufferCapacity = pStaticBuffer->capacity;
     RuntimeAssert(pStaticBuffer->count + elementCount <= bufferCapacity);
@@ -581,7 +647,7 @@ T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer, uint32_t
 }
 
 template<typename T>
-T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer, T value)
+internal T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer, T value)
 {
     T* pValue = _k15_static_buffer_push_back(pStaticBuffer, 1u);
     memcpy(pValue, &value, sizeof(T));
@@ -589,7 +655,7 @@ T* _k15_static_buffer_push_back(base_static_buffer_t<T>* pStaticBuffer, T value)
 }
 
 template<typename T>
-bool _k15_push_static_buffer_to_dynamic_buffer(base_static_buffer_t<T>* pStaticBuffer, dynamic_buffer_t<T>* pDynamicBuffer)
+internal bool _k15_push_static_buffer_to_dynamic_buffer(base_static_buffer_t<T>* pStaticBuffer, dynamic_buffer_t<T>* pDynamicBuffer)
 {
     T* pDataFromDynamicBuffer = _k15_dynamic_buffer_push_back<T>(pDynamicBuffer, pStaticBuffer->count);
     if(pDataFromDynamicBuffer == nullptr)
@@ -601,7 +667,7 @@ bool _k15_push_static_buffer_to_dynamic_buffer(base_static_buffer_t<T>* pStaticB
     return true;
 }
 
-void* _k15_allocate_from_block_allocator(block_allocator_t* pBlockAllocator, uint32_t sizeInBytes)
+internal void* _k15_allocate_from_block_allocator(block_allocator_t* pBlockAllocator, uint32_t sizeInBytes)
 {
     block_allocator_t* pCurrentBlock = pBlockAllocator;
 
@@ -639,7 +705,7 @@ void* _k15_allocate_from_block_allocator(block_allocator_t* pBlockAllocator, uin
     return pNextBlock->pBasePointer;
 }
 
-bool _k15_create_block_allocator(block_allocator_t** ppBlockAllocator)
+internal bool _k15_create_block_allocator(block_allocator_t** ppBlockAllocator)
 {
     uint8_t* pFirstBlockMemory = (uint8_t*)malloc(DefaultBlockCapacityInBytes + sizeof(block_allocator_t));
     if( pFirstBlockMemory == nullptr )
@@ -658,7 +724,7 @@ bool _k15_create_block_allocator(block_allocator_t** ppBlockAllocator)
     return true;
 }
 
-void* _k15_allocate_from_stack_allocator(stack_allocator_t* pStackAllocator, uint32_t sizeInBytes)
+internal void* _k15_allocate_from_stack_allocator(stack_allocator_t* pStackAllocator, uint32_t sizeInBytes)
 {
     RuntimeAssert(pStackAllocator->sizeInBytes + sizeInBytes < pStackAllocator->capacityInBytes);
     void* pData = pStackAllocator->pBasePointer + pStackAllocator->sizeInBytes;
@@ -667,7 +733,7 @@ void* _k15_allocate_from_stack_allocator(stack_allocator_t* pStackAllocator, uin
     return pData;
 }
 
-bool _k15_create_stack_allocator(stack_allocator_t** ppStackAllocator, uint32_t capacityInBytes)
+internal bool _k15_create_stack_allocator(stack_allocator_t** ppStackAllocator, uint32_t capacityInBytes)
 {
     uint8_t* restrict_modifier pStackAllocatorMemory = (uint8_t*)malloc(capacityInBytes + sizeof(stack_allocator_t));
     if( pStackAllocatorMemory == nullptr )
@@ -685,20 +751,21 @@ bool _k15_create_stack_allocator(stack_allocator_t** ppStackAllocator, uint32_t 
     return true;
 }
 
-bool _k15_create_barycentric_coordinate_buffer(barycentric_coordinates_buffer_t* pBarycentricCoordinateBuffer, uint32_t coordinateCount)
+internal bool _k15_create_barycentric_coordinate_buffer(barycentric_coordinates_buffer_t* pBarycentricCoordinateBuffer, uint32_t coordinateCount)
 {
-    float* pCoordinateBuffer = (float*)malloc(coordinateCount * sizeof(float) * 2u);
-    if( pCoordinateBuffer == nullptr )
+    float* pUBuffer = (float*)_mm_malloc(coordinateCount * sizeof(float), 16);
+    float* pVBuffer = (float*)_mm_malloc(coordinateCount * sizeof(float), 16);
+    if( pUBuffer == nullptr || pVBuffer == nullptr)
     {
         return false;
     }
 
-    pBarycentricCoordinateBuffer->pU = pCoordinateBuffer;
-    pBarycentricCoordinateBuffer->pV = pCoordinateBuffer + coordinateCount;
+    pBarycentricCoordinateBuffer->pU = pUBuffer;
+    pBarycentricCoordinateBuffer->pV = pVBuffer;
     return true;
 }
 
-void _k15_reset_stack_allocator(stack_allocator_t* pStackAllocator)
+internal void _k15_reset_stack_allocator(stack_allocator_t* pStackAllocator)
 {
     pStackAllocator->sizeInBytes = 0;
 }
@@ -714,21 +781,11 @@ void k15_create_projection_matrix(matrix4x4f_t* pOutMatrix, uint32_t width, uint
     const float aspect = widthF / heightF;
     const float e = 1.0f/tanf(fovRad/2.0f);
 
-#if 1
     pOutMatrix->m00 = e/aspect;
     pOutMatrix->m11 = e;
     pOutMatrix->m22 = -((far + near)/(far - near));
     pOutMatrix->m23 = -((2.0f * far * near)/(far - near));
     pOutMatrix->m32 = -1.0f;
-#else
-    pOutMatrix->m00 = (2.f*near)/widthF;
-    pOutMatrix->m02 = 0.0f;
-    pOutMatrix->m11 = (2.0f*near)/heightF;
-    pOutMatrix->m12 = 0.0f;
-    pOutMatrix->m22 = -((far+near)/(far-near));
-    pOutMatrix->m23 = -((2.0f*near*far)/(far-near));
-    pOutMatrix->m32 = -1.0f;
-#endif
 }
 
 void k15_create_orthographic_matrix(matrix4x4f_t* pOutMatrix, uint32_t width, uint32_t height, float near, float far)
@@ -747,7 +804,7 @@ void k15_set_identity_matrix4x4f(matrix4x4f_t* pMatrix)
     memcpy(pMatrix, IdentityMatrix4x4, sizeof(IdentityMatrix4x4));
 }
 
-bool _k15_matrix4x4f_is_equal(const matrix4x4f_t* restrict_modifier pA, const matrix4x4f_t* restrict_modifier pB)
+internal bool _k15_matrix4x4f_is_equal(const matrix4x4f_t* restrict_modifier pA, const matrix4x4f_t* restrict_modifier pB)
 {
     CompiletimeAssert(sizeof(matrix4x4f_t) == sizeof(float[16]));
     return memcmp(pA, pB, sizeof(matrix4x4f_t)) == 0;
@@ -762,7 +819,7 @@ void _k15_test_image_for_color_buffer(const software_rasterizer_context_t* pCont
         {
             for(uint32_t x = 0; x < pContext->backBufferWidth; ++x)
             {
-                const uint32_t index = x + y * pContext->backBufferStride;
+                const uint32_t index = x + y * pContext->colorBufferStride;
                 pBackBuffer[index]=0xFF0000FF;
             }
         }
@@ -770,7 +827,7 @@ void _k15_test_image_for_color_buffer(const software_rasterizer_context_t* pCont
         {
             for(uint32_t x = 0; x < pContext->backBufferWidth; ++x)
             {
-                const uint32_t index = x + y * pContext->backBufferStride;
+                const uint32_t index = x + y * pContext->colorBufferStride;
                 pBackBuffer[index]=0xFFFF0000;
             }
         }
@@ -778,7 +835,7 @@ void _k15_test_image_for_color_buffer(const software_rasterizer_context_t* pCont
         {
             for(uint32_t x = 0; x < pContext->backBufferWidth; ++x)
             {
-                const uint32_t index = x + y * pContext->backBufferStride;
+                const uint32_t index = x + y * pContext->colorBufferStride;
                 pBackBuffer[index]=0xFF00FF00;
             }
         }
@@ -786,14 +843,14 @@ void _k15_test_image_for_color_buffer(const software_rasterizer_context_t* pCont
         {
             for(uint32_t x = 0; x < pContext->backBufferWidth; ++x)
             {
-                const uint32_t index = x + y * pContext->backBufferStride;
+                const uint32_t index = x + y * pContext->colorBufferStride;
                 pBackBuffer[index]=0xFFFFFFFF;
             }
         }
     } 
 }
 
-vector4f_t _k15_mul_vector4_matrix44(const vector4f_t* pVector, const matrix4x4f_t* pMatrix)
+internal vector4f_t _k15_mul_vector4_matrix44(const vector4f_t* pVector, const matrix4x4f_t* pMatrix)
 {
     vector4f_t multipliedVector = {};
     multipliedVector.x = pVector->x * pMatrix->m00 + pVector->y * pMatrix->m01 + pVector->z * pMatrix->m02 + pVector->w * pMatrix->m03;
@@ -803,7 +860,7 @@ vector4f_t _k15_mul_vector4_matrix44(const vector4f_t* pVector, const matrix4x4f
     return multipliedVector;
 }
 
-void _k15_mul_multiple_vector4_matrix44(vector4f_t* pVectors, const matrix4x4f_t* pMatrix, uint32_t vectorCount)
+internal void _k15_mul_multiple_vector4_matrix44(vector4f_t* pVectors, const matrix4x4f_t* pMatrix, uint32_t vectorCount)
 {
     for(uint32_t vectorIndex = 0; vectorIndex < vectorCount; ++vectorIndex)
     {
@@ -812,7 +869,7 @@ void _k15_mul_multiple_vector4_matrix44(vector4f_t* pVectors, const matrix4x4f_t
 }
 
 //http://www.edepot.com/linee.html
-void _k15_draw_line(void* pColorBuffer, uint32_t colorBufferStride, const vector2f_t* pVectorA, const vector2f_t* pVectorB, uint32_t color)
+internal void _k15_draw_line(void* pColorBuffer, uint32_t colorBufferStride, const vector2f_t* pVectorA, const vector2f_t* pVectorB, uint32_t color)
 {
     int x = (int)pVectorA->x;
     int y = (int)pVectorA->y;
@@ -875,31 +932,30 @@ void _k15_draw_line(void* pColorBuffer, uint32_t colorBufferStride, const vector
     }
 }
 
-template<typename T>
-inline bool k15_is_in_range_inclusive(T value, T min, T max)
+internal inline uint32_t float_to_uint32_unsafe(float value)
 {
-    return value >= min && value <= max;
+    return (uint32_t)(value + 0.5f);
 }
 
-inline uint8_t float_to_uint8(float value)
+internal inline uint8_t float_to_uint8(float value)
 {
     RuntimeAssert(value >= 0.0f && value <= (float)UINT8_MAX);
     return (uint8_t)value;
 }
 
-inline uint32_t float_to_uint32(float value)
+internal inline uint32_t float_to_uint32(float value)
 {
     RuntimeAssert(value >= 0.0f && value <= (float)UINT_MAX);
     return (uint32_t)(value + 0.5f);
 }
 
-inline uint32_t float_to_int32(float value)
+internal inline uint32_t float_to_int32(float value)
 {
     RuntimeAssert(value >= (float)INT_MIN && value <= (float)INT_MAX)
     return (int32_t)(value + 0.5f);
 }
 
-vector4f_t k15_vector4f_hadamard(vector4f_t a, vector4f_t b)
+internal vector4f_t k15_vector4f_hadamard(vector4f_t a, vector4f_t b)
 {
     vector4f_t vector = a;
     vector.x *= b.x;
@@ -910,7 +966,7 @@ vector4f_t k15_vector4f_hadamard(vector4f_t a, vector4f_t b)
     return vector;
 }
 
-vector4f_t k15_vector4f_scale(vector4f_t a, float scale)
+internal vector4f_t k15_vector4f_scale(vector4f_t a, float scale)
 {
     vector4f_t vector = a;
     vector.x *= scale;
@@ -921,7 +977,7 @@ vector4f_t k15_vector4f_scale(vector4f_t a, float scale)
     return vector;
 }
 
-vector4f_t k15_vector4f_add(vector4f_t a, vector4f_t b)
+internal vector4f_t k15_vector4f_add(vector4f_t a, vector4f_t b)
 {
     vector4f_t vector;
     vector.x = a.x + b.x;
@@ -932,7 +988,7 @@ vector4f_t k15_vector4f_add(vector4f_t a, vector4f_t b)
     return vector;
 }
 
-vector4f_t k15_vector4f_clamp01(vector4f_t v)
+internal vector4f_t k15_vector4f_clamp01(vector4f_t v)
 {
     vector4f_t vector;
     vector.x = clamp(v.x, 0.0f, 1.0f);
@@ -943,7 +999,7 @@ vector4f_t k15_vector4f_clamp01(vector4f_t v)
     return vector;
 }
 
-vector3f_t k15_vector3f_scale(vector3f_t a, float scale)
+internal vector3f_t k15_vector3f_scale(vector3f_t a, float scale)
 {
     vector3f_t vector = a;
     vector.x *= scale;
@@ -953,7 +1009,7 @@ vector3f_t k15_vector3f_scale(vector3f_t a, float scale)
     return vector;
 }
 
-vector3f_t k15_vector3f_add(vector3f_t a, vector3f_t b)
+internal vector3f_t k15_vector3f_add(vector3f_t a, vector3f_t b)
 {
     vector3f_t vector;
     vector.x = a.x + b.x;
@@ -963,7 +1019,7 @@ vector3f_t k15_vector3f_add(vector3f_t a, vector3f_t b)
     return vector;
 }
 
-vector2f_t k15_vector2f_scale(vector2f_t a, float scale)
+internal vector2f_t k15_vector2f_scale(vector2f_t a, float scale)
 {
     vector2f_t vector = a;
     vector.x *= scale;
@@ -972,7 +1028,7 @@ vector2f_t k15_vector2f_scale(vector2f_t a, float scale)
     return vector;
 }
 
-vector2f_t k15_vector2f_add(vector2f_t a, vector2f_t b)
+internal vector2f_t k15_vector2f_add(vector2f_t a, vector2f_t b)
 {
     vector2f_t vector;
     vector.x = a.x + b.x;
@@ -981,7 +1037,7 @@ vector2f_t k15_vector2f_add(vector2f_t a, vector2f_t b)
     return vector;
 }
 
-vector2f_t k15_vector2f_sub(vector2f_t a, vector2f_t b)
+internal vector2f_t k15_vector2f_sub(vector2f_t a, vector2f_t b)
 {
     vector2f_t vector;
     vector.x = a.x - b.x;
@@ -990,32 +1046,32 @@ vector2f_t k15_vector2f_sub(vector2f_t a, vector2f_t b)
     return vector;
 }
 
-float k15_vector2f_dot(vector2f_t a, vector2f_t b)
+internal float k15_vector2f_dot(vector2f_t a, vector2f_t b)
 {
     return a.x * b.x + a.y * b.y;
 }
 
-float k15_vector3f_dot(vector3f_t a, vector3f_t b)
+internal float k15_vector3f_dot(vector3f_t a, vector3f_t b)
 {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-constexpr vector4f_t k15_create_vector4f(float x, float y, float z, float w)
+internal inline constexpr vector4f_t k15_create_vector4f(float x, float y, float z, float w)
 {
     return {x, y, z, w};
 }
 
-constexpr vector3f_t k15_create_vector3f(float x, float y, float z)
+internal inline constexpr vector3f_t k15_create_vector3f(float x, float y, float z)
 {
     return {x, y, z};
 }
 
-constexpr vector2f_t k15_create_vector2f(float x, float y)
+internal inline constexpr vector2f_t k15_create_vector2f(float x, float y)
 {
     return {x, y};
 }
 
-inline void k15_repeat_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
+internal inline void _k15_repeat_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
 {
     for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex )
     {
@@ -1034,16 +1090,16 @@ inline void k15_repeat_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
     }
 }
 
-inline void k15_clamp_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
+internal inline void _k15_clamp_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
 {
     for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex )
     {
-        pTexcoords[texCoordIndex].x = clamp(pTexcoords[texCoordIndex].x, 0.0f, 1.0f);
-        pTexcoords[texCoordIndex].y = clamp(pTexcoords[texCoordIndex].y, 0.0f, 1.0f);
+        pTexcoords[texCoordIndex].x = clamp01f(pTexcoords[texCoordIndex].x);
+        pTexcoords[texCoordIndex].y = clamp01f(pTexcoords[texCoordIndex].y);
     }
 }
 
-inline void k15_mirror_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
+internal inline void _k15_mirror_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
 {
     for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex )
     {
@@ -1062,141 +1118,183 @@ inline void k15_mirror_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
     }
 }
 
+void _k15_fill_texcoords_from_vertex_data(const vertex_t* pVertices, vector2f_t* pOutTexCoords, uint32_t vertexCount)
+{
+    for(uint32_t vertexIndex = 0u; vertexIndex < vertexCount; ++vertexIndex)
+    {
+       pOutTexCoords[vertexIndex] = pVertices[vertexIndex].texcoord;
+    }
+}
+
 template<sample_addressing_mode_t ADDRESSING_MODE>
-texture_samples_t k15_sample_texture(texture_handle_t texture, vector2f_t* restrict_modifier pTexcoords, uint32_t texcoordCount)
+texture_samples_t k15_sample_texture(texture_handle_t texture, const pixel_shader_input_t* pPixelShaderInput, uint32_t texcoordCount)
 {
     RuntimeAssert(texcoordCount <= PixelShaderInputCount);
     texture_t* pTextureData = (texture_t*)texture.pHandle;
 
-    switch( ADDRESSING_MODE )
-    {
-        case sample_addressing_mode_t::repeat:
-        k15_repeat_texcoords(pTexcoords, texcoordCount);
-        break;
-
-        case sample_addressing_mode_t::clamp:
-        k15_clamp_texcoords(pTexcoords, texcoordCount);
-        break;
-
-        case sample_addressing_mode_t::mirror:
-        k15_mirror_texcoords(pTexcoords, texcoordCount);
-        break;
-    }
-
-    const uint32_t width = pTextureData->width - 1u;
-    const uint32_t height = pTextureData->height - 1u;
-    const uint32_t stride = pTextureData->stride;
-    const uint8_t componentCount = pTextureData->componentCount;
-    const uint32_t texcoordBatchRest = texcoordCount & 0x3;
-    texcoordCount -= texcoordBatchRest;
-
-    const uint8_t* restrict_modifier pTextureImageData = (uint8_t*)pTextureData->pData;
+    constexpr uint32_t TexcoordBatchCount = 512;
+    vector2f_t texCoords[TexcoordBatchCount];
     texture_samples_t samples = {};
+    samples.pColors = (vector4f_t*)_k15_allocate_from_stack_allocator(pPixelShaderInput->pStackAllocator, sizeof(vector4f_t) * texcoordCount);
+    RuntimeAssert(samples.pColors != nullptr);
+
+    for(uint32_t texcoordIndex = 0u; texcoordIndex < texcoordCount; texcoordIndex += TexcoordBatchCount)
     {
-        uint32_t x[4], y[4], texelIndices[4], nextX[4], nextY[4], nextTexelIndices[4];
+        uint32_t currentTexCoordBatchCount = get_min(texcoordCount - texcoordIndex, TexcoordBatchCount);
+        _k15_fill_texcoords_from_vertex_data(pPixelShaderInput->pVertexData + texcoordIndex, texCoords, currentTexCoordBatchCount);
 
-        nextX[0] = float_to_uint32(clamp(pTexcoords[0].x * (float)width, 0, (float)width));
-        nextX[1] = float_to_uint32(clamp(pTexcoords[1].x * (float)width, 0, (float)width));
-        nextX[2] = float_to_uint32(clamp(pTexcoords[2].x * (float)width, 0, (float)width));
-        nextX[3] = float_to_uint32(clamp(pTexcoords[3].x * (float)width, 0, (float)width));
-
-        nextY[0] = height - float_to_uint32(clamp(pTexcoords[0].y * (float)height, 0, (float)height));
-        nextY[1] = height - float_to_uint32(clamp(pTexcoords[1].y * (float)height, 0, (float)height));
-        nextY[2] = height - float_to_uint32(clamp(pTexcoords[2].y * (float)height, 0, (float)height));
-        nextY[3] = height - float_to_uint32(clamp(pTexcoords[3].y * (float)height, 0, (float)height));
-
-        nextTexelIndices[0] = nextX[0] + nextY[0] * stride;
-        nextTexelIndices[1] = nextX[1] + nextY[1] * stride;
-        nextTexelIndices[2] = nextX[2] + nextY[2] * stride;
-        nextTexelIndices[3] = nextX[3] + nextY[3] * stride;
-
-        for( uint32_t texcoordIndex = 0u; texcoordIndex < texcoordCount; texcoordIndex += 4u)
+        switch( ADDRESSING_MODE )
         {
-            memcpy(x, nextX, sizeof(x));
-            memcpy(y, nextY, sizeof(y));
-            memcpy(texelIndices, nextTexelIndices, sizeof(texelIndices));
+            case sample_addressing_mode_t::repeat:
+            _k15_repeat_texcoords(texCoords, currentTexCoordBatchCount);
+            break;
 
-            //FK: This will read out of bounds in the last loop iteration - but that shouldn't be a problem
-            nextX[0] = float_to_uint32(clamp(pTexcoords[texcoordIndex + 4].x * (float)width, 0, (float)width));
-            nextX[1] = float_to_uint32(clamp(pTexcoords[texcoordIndex + 5].x * (float)width, 0, (float)width));
-            nextX[2] = float_to_uint32(clamp(pTexcoords[texcoordIndex + 6].x * (float)width, 0, (float)width));
-            nextX[3] = float_to_uint32(clamp(pTexcoords[texcoordIndex + 7].x * (float)width, 0, (float)width));
+            case sample_addressing_mode_t::clamp:
+            _k15_clamp_texcoords(texCoords, currentTexCoordBatchCount);
+            break;
 
-            nextY[0] = height - float_to_uint32(clamp(pTexcoords[texcoordIndex + 4].y * (float)height, 0, (float)height));
-            nextY[1] = height - float_to_uint32(clamp(pTexcoords[texcoordIndex + 5].y * (float)height, 0, (float)height));
-            nextY[2] = height - float_to_uint32(clamp(pTexcoords[texcoordIndex + 6].y * (float)height, 0, (float)height));
-            nextY[3] = height - float_to_uint32(clamp(pTexcoords[texcoordIndex + 7].y * (float)height, 0, (float)height));
+            case sample_addressing_mode_t::mirror:
+            _k15_mirror_texcoords(texCoords, currentTexCoordBatchCount);
+            break;
+        }
+
+        const uint32_t width = pTextureData->width - 1u;
+        const uint32_t height = pTextureData->height - 1u;
+        const uint32_t stride = pTextureData->stride;
+        const uint8_t componentCount = pTextureData->componentCount;
+        const uint32_t currentTexcoordBatchRest = currentTexCoordBatchCount & 0x3;
+        currentTexCoordBatchCount -= currentTexcoordBatchRest;
+
+        const uint8_t* restrict_modifier pTextureImageData = (uint8_t*)pTextureData->pData;
+        if( currentTexCoordBatchCount > 0u )
+        {
+            uint32_t x[4], y[4], texelIndices[4], nextX[4], nextY[4], nextTexelIndices[4];
+
+            nextX[0] = float_to_uint32(texCoords[0].x * (float)width);
+            nextX[1] = float_to_uint32(texCoords[1].x * (float)width);
+            nextX[2] = float_to_uint32(texCoords[2].x * (float)width);
+            nextX[3] = float_to_uint32(texCoords[3].x * (float)width);
+
+            nextY[0] = height - float_to_uint32(texCoords[0].y * (float)height);
+            nextY[1] = height - float_to_uint32(texCoords[1].y * (float)height);
+            nextY[2] = height - float_to_uint32(texCoords[2].y * (float)height);
+            nextY[3] = height - float_to_uint32(texCoords[3].y * (float)height);
 
             nextTexelIndices[0] = nextX[0] + nextY[0] * stride;
             nextTexelIndices[1] = nextX[1] + nextY[1] * stride;
             nextTexelIndices[2] = nextX[2] + nextY[2] * stride;
             nextTexelIndices[3] = nextX[3] + nextY[3] * stride;
 
-            MemoryPrefetch0(pTextureImageData + nextTexelIndices[0] * componentCount);
-            MemoryPrefetch0(pTextureImageData + nextTexelIndices[1] * componentCount);
-            MemoryPrefetch0(pTextureImageData + nextTexelIndices[2] * componentCount);
-            MemoryPrefetch0(pTextureImageData + nextTexelIndices[3] * componentCount);
+            for( uint32_t batchTexcoordIndex = 0u; batchTexcoordIndex < currentTexCoordBatchCount; batchTexcoordIndex += 4u)
+            {
+                memcpy(x, nextX, sizeof(x));
+                memcpy(y, nextY, sizeof(y));
+                memcpy(texelIndices, nextTexelIndices, sizeof(texelIndices));
+
+                //FK: This will read out of bounds in the last loop iteration - but that shouldn't be a problem
+                nextX[0] = float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 0].x * (float)width);
+                nextX[1] = float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 1].x * (float)width);
+                nextX[2] = float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 2].x * (float)width);
+                nextX[3] = float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 3].x * (float)width);
+
+                nextY[0] = height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 0].y * (float)height);
+                nextY[1] = height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 1].y * (float)height);
+                nextY[2] = height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 2].y * (float)height);
+                nextY[3] = height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 3].y * (float)height);
+
+                nextTexelIndices[0] = nextX[0] + nextY[0] * stride;
+                nextTexelIndices[1] = nextX[1] + nextY[1] * stride;
+                nextTexelIndices[2] = nextX[2] + nextY[2] * stride;
+                nextTexelIndices[3] = nextX[3] + nextY[3] * stride;
+
+                MemoryPrefetch0(pTextureImageData + nextTexelIndices[0] * componentCount);
+                MemoryPrefetch0(pTextureImageData + nextTexelIndices[1] * componentCount);
+                MemoryPrefetch0(pTextureImageData + nextTexelIndices[2] * componentCount);
+                MemoryPrefetch0(pTextureImageData + nextTexelIndices[3] * componentCount);
+
+#if 1
+                switch(componentCount)
+                {
+                    case 4u:
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].w = (float)pTextureImageData[texelIndices[0] * componentCount + 3] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].w = (float)pTextureImageData[texelIndices[1] * componentCount + 3] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].w = (float)pTextureImageData[texelIndices[2] * componentCount + 3] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].w = (float)pTextureImageData[texelIndices[3] * componentCount + 3] / 255.f;
+                    case 3u:
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].z = (float)pTextureImageData[texelIndices[0] * componentCount + 2] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].z = (float)pTextureImageData[texelIndices[1] * componentCount + 2] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].z = (float)pTextureImageData[texelIndices[2] * componentCount + 2] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].z = (float)pTextureImageData[texelIndices[3] * componentCount + 2] / 255.f;
+                    case 2u:
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].y = (float)pTextureImageData[texelIndices[0] * componentCount + 1] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].y = (float)pTextureImageData[texelIndices[1] * componentCount + 1] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].y = (float)pTextureImageData[texelIndices[2] * componentCount + 1] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].y = (float)pTextureImageData[texelIndices[3] * componentCount + 1] / 255.f;
+                    case 1u:
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].x = (float)pTextureImageData[texelIndices[0] * componentCount + 0] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].x = (float)pTextureImageData[texelIndices[1] * componentCount + 0] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].x = (float)pTextureImageData[texelIndices[2] * componentCount + 0] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].x = (float)pTextureImageData[texelIndices[3] * componentCount + 0] / 255.f;
+                        break;
+
+                    default:
+                        RuntimeAssert(false);
+                }
+#else
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 0].w = 1.0f;
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 1].w = 1.0f;
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 2].w = 1.0f;
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 3].w = 1.0f;
+                
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 0].z = 0.0f;
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 1].z = 0.0f;
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 2].z = 0.0f;
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 3].z = 0.0f;
+
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 0].y = y[0];
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 1].y = y[1];
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 2].y = y[2];
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 3].y = y[3];
+
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 0].x = x[0];
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 1].x = x[1];
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 2].x = x[2];
+                samples.pColors[texcoordIndex + batchTexcoordIndex + 3].x = x[3];
+#endif
+            }
+        }
+
+        for( uint32_t singleTexcoordIndex = 0; singleTexcoordIndex < currentTexcoordBatchRest; ++singleTexcoordIndex )
+        {
+            const uint32_t globalTexcoordIndex = currentTexCoordBatchCount + texcoordIndex + singleTexcoordIndex;
+            const uint32_t x = float_to_uint32(texCoords[currentTexCoordBatchCount + singleTexcoordIndex].x * (float)width);
+            const uint32_t y = height - float_to_uint32(texCoords[currentTexCoordBatchCount + singleTexcoordIndex].y * (float)height);
+            const uint32_t texelIndex = x + y * stride;
 
             switch(componentCount)
             {
                 case 4u:
-                    samples.colors[texcoordIndex + 0].w = (float)pTextureImageData[texelIndices[0] * componentCount + 3] / 255.f;
-                    samples.colors[texcoordIndex + 1].w = (float)pTextureImageData[texelIndices[1] * componentCount + 3] / 255.f;
-                    samples.colors[texcoordIndex + 2].w = (float)pTextureImageData[texelIndices[2] * componentCount + 3] / 255.f;
-                    samples.colors[texcoordIndex + 3].w = (float)pTextureImageData[texelIndices[3] * componentCount + 3] / 255.f;
+                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
+                    samples.pColors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
+                    samples.pColors[globalTexcoordIndex].z = (float)pTextureImageData[texelIndex * componentCount + 2] / 255.f;
+                    samples.pColors[globalTexcoordIndex].w = (float)pTextureImageData[texelIndex * componentCount + 3] / 255.f;
+                    break;
                 case 3u:
-                    samples.colors[texcoordIndex + 0].z = (float)pTextureImageData[texelIndices[0] * componentCount + 2] / 255.f;
-                    samples.colors[texcoordIndex + 1].z = (float)pTextureImageData[texelIndices[1] * componentCount + 2] / 255.f;
-                    samples.colors[texcoordIndex + 2].z = (float)pTextureImageData[texelIndices[2] * componentCount + 2] / 255.f;
-                    samples.colors[texcoordIndex + 3].z = (float)pTextureImageData[texelIndices[3] * componentCount + 2] / 255.f;
+                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
+                    samples.pColors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
+                    samples.pColors[globalTexcoordIndex].z = (float)pTextureImageData[texelIndex * componentCount + 2] / 255.f;
+                    break;
                 case 2u:
-                    samples.colors[texcoordIndex + 0].y = (float)pTextureImageData[texelIndices[0] * componentCount + 1] / 255.f;
-                    samples.colors[texcoordIndex + 1].y = (float)pTextureImageData[texelIndices[1] * componentCount + 1] / 255.f;
-                    samples.colors[texcoordIndex + 2].y = (float)pTextureImageData[texelIndices[2] * componentCount + 1] / 255.f;
-                    samples.colors[texcoordIndex + 3].y = (float)pTextureImageData[texelIndices[3] * componentCount + 1] / 255.f;
+                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
+                    samples.pColors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
+                    break;
                 case 1u:
-                    samples.colors[texcoordIndex + 0].x = (float)pTextureImageData[texelIndices[0] * componentCount + 0] / 255.f;
-                    samples.colors[texcoordIndex + 1].x = (float)pTextureImageData[texelIndices[1] * componentCount + 0] / 255.f;
-                    samples.colors[texcoordIndex + 2].x = (float)pTextureImageData[texelIndices[2] * componentCount + 0] / 255.f;
-                    samples.colors[texcoordIndex + 3].x = (float)pTextureImageData[texelIndices[3] * componentCount + 0] / 255.f;
+                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
                     break;
 
                 default:
                     RuntimeAssert(false);
             }
-        }
-    }
-
-    for( uint32_t texcoordIndex = 0; texcoordIndex < texcoordBatchRest; ++texcoordIndex )
-    {
-        const uint32_t globalTexcoordIndex = texcoordIndex + texcoordCount;
-        const uint32_t x = float_to_uint32(clamp(pTexcoords[globalTexcoordIndex].x * (float)width, 0, (float)width));
-        const uint32_t y = height - float_to_uint32(clamp(pTexcoords[globalTexcoordIndex].y * (float)height, 0, (float)height));
-        const uint32_t texelIndex = x + y * stride;
-
-        switch(componentCount)
-        {
-            case 4u:
-                samples.colors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
-                samples.colors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
-                samples.colors[globalTexcoordIndex].z = (float)pTextureImageData[texelIndex * componentCount + 2] / 255.f;
-                samples.colors[globalTexcoordIndex].w = (float)pTextureImageData[texelIndex * componentCount + 3] / 255.f;
-                break;
-            case 3u:
-                samples.colors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
-                samples.colors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
-                samples.colors[globalTexcoordIndex].z = (float)pTextureImageData[texelIndex * componentCount + 2] / 255.f;
-                break;
-            case 2u:
-                samples.colors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
-                samples.colors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
-                break;
-            case 1u:
-                samples.colors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
-                break;
-
-            default:
-                RuntimeAssert(false);
         }
     }
 
@@ -1214,105 +1312,78 @@ constexpr vertex_t k15_create_vertex(vector4f_t position, vector4f_t normal, vec
     return vertex;
 }
 
-
-void k15_generate_barycentric_vertices(pixel_shader_input_t* pOutVertex, barycentric_coordinates_buffer_t barycentricCoordinates, const vertex_t* pTriangleVertices, uint32_t vertexCount)
+internal void _k15_generate_barycentric_vertices(pixel_shader_input_t* pOutVertex, barycentric_coordinates_buffer_t barycentricCoordinates, uint32_t barycentricCoordinateCount, const vertex_t* pTriangleVertices)
 {
-    const uint32_t vertexRest = vertexCount % 4;
-    const uint32_t simdVertexCount = vertexCount - vertexRest;
-
-#if 0
-    const __m128 posV0 = _mm_set_ps(pTriangleVertices[0].position.x, pTriangleVertices[0].position.y, pTriangleVertices[0].position.z, pTriangleVertices[0].position.w);
-    const __m128 posV1 = _mm_set_ps(pTriangleVertices[1].position.x, pTriangleVertices[1].position.y, pTriangleVertices[1].position.z, pTriangleVertices[1].position.w);
-    const __m128 posV2 = _mm_set_ps(pTriangleVertices[2].position.x, pTriangleVertices[2].position.y, pTriangleVertices[2].position.z, pTriangleVertices[2].position.w);
-
-    const __m128 uvV0 = _mm_set_ps(pTriangleVertices[0].texcoord.y, pTriangleVertices[0].texcoord.x, pTriangleVertices[0].texcoord.y, pTriangleVertices[0].texcoord.x);
-    const __m128 uvV1 = _mm_set_ps(pTriangleVertices[1].texcoord.y, pTriangleVertices[1].texcoord.x, pTriangleVertices[1].texcoord.y, pTriangleVertices[1].texcoord.x);
-    const __m128 uvV2 = _mm_set_ps(pTriangleVertices[2].texcoord.y, pTriangleVertices[2].texcoord.x, pTriangleVertices[2].texcoord.y, pTriangleVertices[2].texcoord.x);
-
-    const __m128i uvMaskStore = _mm_set_epi32(0x0, 0x0, 0xFFFFFFFF, 0xFFFFFFFF);
-
-    for( uint32_t vertexIndex = 0u; vertexIndex < vertexCount; ++vertexIndex)
-    {
-        const __m128 u = _mm_set1_ps(pBarycentricCoordinates[vertexIndex].x);
-        const __m128 v = _mm_set1_ps(pBarycentricCoordinates[vertexIndex].y);
-        const __m128 w = _mm_set1_ps(pBarycentricCoordinates[vertexIndex].z);
-
-        __m128 pos = _mm_setzero_ps();
-        pos = _mm_fmadd_ps(posV0, u, pos);
-        pos = _mm_fmadd_ps(posV1, v, pos);
-        pos = _mm_fmadd_ps(posV2, w, pos);
-
-        __m128 uv = _mm_setzero_ps();
-        uv = _mm_fmadd_ps(uvV0, u, uv);
-        uv = _mm_fmadd_ps(uvV1, v, uv);
-        uv = _mm_fmadd_ps(uvV2, w, uv);
-
-        _mm_store_ps((float*)&pOutVertex->positions[vertexIndex], pos);
-        _mm_maskstore_ps((float*)&pOutVertex->texcoords[vertexIndex], uvMaskStore, uv);
-    }
-#elif 1
-
     MemoryPrefetch0(barycentricCoordinates.pU);
     MemoryPrefetch0(barycentricCoordinates.pV);
+    MemoryPrefetch0(pTriangleVertices);
 
-    const uint32_t attributeCount = _k15_get_attribute_count(pTriangleVertices->pVertexFormat);
-    for( uint32_t vertexIndex = 0u; vertexIndex < vertexCount; vertexIndex += 4u )
+    float* pOutputVertexAttributes = (float*)pOutVertex->pVertexData;
+    const float* pInputVertexAttributes[3] = {
+        (const float*)&pTriangleVertices[0],
+        (const float*)&pTriangleVertices[1],
+        (const float*)&pTriangleVertices[2]
+    };
+
+    MemoryPrefetch0(pInputVertexAttributes[0]);
+    MemoryPrefetch0(pInputVertexAttributes[1]);
+    MemoryPrefetch0(pInputVertexAttributes[2]);
+
+    const uint32_t attributeCount = sizeof(vertex_t) / sizeof(float);
+    uint32_t globalAttributeIndex = 0u;
+    for( uint32_t baryIndex = 0u; baryIndex < barycentricCoordinateCount; ++baryIndex )
     {
-        MemoryPrefetch0(pTriangleVertices->pVertexData + vertexIndex * attributeCount);
+        const __m128 uWide = _mm_load1_ps(barycentricCoordinates.pU + baryIndex);
+        const __m128 vWide = _mm_load1_ps(barycentricCoordinates.pV + baryIndex);
+        const __m128 wWide = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_add_ps(uWide, vWide));
 
-        const __m128 u = _mm_load_ps(barycentricCoordinates.pU + vertexIndex);
-        const __m128 v = _mm_load_ps(barycentricCoordinates.pV + vertexIndex);
-        const __m128 w = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_add_ps(u, v));
+        MemoryPrefetch0(barycentricCoordinates.pU + baryIndex + 4u);
+        MemoryPrefetch0(barycentricCoordinates.pV + baryIndex + 4u);
 
-        MemoryPrefetch0(barycentricCoordinates.pU + vertexIndex + 4u);
-        MemoryPrefetch0(barycentricCoordinates.pV + vertexIndex + 4u);
-
-        uint32_t localAttributeIndex = 0u;
-        for( uint32_t attributeIndex = 0u; attributeIndex < VertexAttributeCount; attributeIndex += 4u )
+        //globalAttributeIndex = (sizeof(vertex_t) / sizeof(float)) * baryIndex;
+        const uint32_t scalarAttributeCount = attributeCount & 0x3;
+        const uint32_t simdAttributeCount = attributeCount - scalarAttributeCount; 
+        for( uint32_t attributeIndex = 0u; attributeIndex < simdAttributeCount; attributeIndex += 4u )
         {
-            const uint32_t attributeBitFlag = (1 << attributeIndex);
-            if( ( pTriangleVertices->attributeBitMask & attributeBitFlag ) == 0 )
-            {
-                continue;
-            }
+            const __m128 vertexAttributes[] = {
+                _mm_load_ps(pInputVertexAttributes[0] + attributeIndex),
+                _mm_load_ps(pInputVertexAttributes[1] + attributeIndex),
+                _mm_load_ps(pInputVertexAttributes[2] + attributeIndex)
+            };
 
-            const uint32_t vertexDataIndex = localAttributeIndex * vertexIndex;
-            const __m128 vertexAttribute = _mm_load_ps(pTriangleVertices->pVertexData + vertexDataIndex);
-            MemoryPrefetch0(pTriangleVertices->pVertexData + vertexDataIndex + 4);
-
-            __m128 transformedVertexAttribute = _mm_mul_ps(vertexAttribute, u);
-            transformedVertexAttribute = _mm_fmadd_ps(vertexAttribute, v, transformedVertexAttribute);
-            transformedVertexAttribute = _mm_fmadd_ps(vertexAttribute, w, transformedVertexAttribute);
+            __m128 transformedVertexAttributes = _mm_mul_ps(vertexAttributes[2], uWide);
+            transformedVertexAttributes = _mm_fmadd_ps(vertexAttributes[1], wWide, transformedVertexAttributes);
+            transformedVertexAttributes = _mm_fmadd_ps(vertexAttributes[0], vWide, transformedVertexAttributes);
             
-            const uint32_t attributesLoaded = get_min(vertexIndex - vertexCount, 4u);
-            const __m128i attributeMask = _mm_cmplt_epi32(_mm_sub_epi32(_mm_set1_epi32(attributesLoaded), _mm_set_epi32(0, 1, 2, 3)), _mm_setzero_si128());
+            _mm_store_ps(pOutputVertexAttributes + globalAttributeIndex, transformedVertexAttributes);
+            globalAttributeIndex += 4u;
+        }
 
-            _mm_maskstore_ps(pOutVertex->pVertexData + vertexDataIndex, attributeMask, transformedVertexAttribute);
-            localAttributeIndex += attributesLoaded;
+        for( uint32_t attributeIndex = simdAttributeCount; attributeIndex < attributeCount; ++attributeIndex )
+        {
+            const float attributes[3] = {
+                pInputVertexAttributes[0][attributeIndex],
+                pInputVertexAttributes[1][attributeIndex],
+                pInputVertexAttributes[2][attributeIndex]
+            };
+
+            const float u = barycentricCoordinates.pU[baryIndex];
+            const float v = barycentricCoordinates.pV[baryIndex];
+            const float w = 1.0f - u - v;
+
+            const float transformedAttribute = attributes[0] * v + attributes[1] * w + attributes[2] * u;
+            pOutputVertexAttributes[globalAttributeIndex] = transformedAttribute;
+            ++globalAttributeIndex;
         }
     }
-
-#else
-    for( uint32_t vertexIndex = 0u; vertexIndex < vertexCount; ++vertexIndex )
-    {
-        const float u = pBarycentricCoordinates[vertexIndex].x;
-        const float v = pBarycentricCoordinates[vertexIndex].y;
-        const float w = pBarycentricCoordinates[vertexIndex].z;
-        
-        pOutVertex->positions[vertexIndex]  = k15_vector4f_add(k15_vector4f_add(k15_vector4f_scale(pTriangleVertices[0].position, u), k15_vector4f_scale(pTriangleVertices[1].position, v)), k15_vector4f_scale(pTriangleVertices[2].position, w));
-        pOutVertex->normals[vertexIndex]    = k15_vector4f_add(k15_vector4f_add(k15_vector4f_scale(pTriangleVertices[0].normal, u), k15_vector4f_scale(pTriangleVertices[1].normal, v)), k15_vector4f_scale(pTriangleVertices[2].normal, w));
-        pOutVertex->colors[vertexIndex]     = k15_vector4f_add(k15_vector4f_add(k15_vector4f_scale(pTriangleVertices[0].color, u), k15_vector4f_scale(pTriangleVertices[1].color, v)), k15_vector4f_scale(pTriangleVertices[2].color, w));
-        pOutVertex->texcoords[vertexIndex]  = k15_vector2f_add(k15_vector2f_add(k15_vector2f_scale(pTriangleVertices[0].texcoord, u), k15_vector2f_scale(pTriangleVertices[1].texcoord, v)), k15_vector2f_scale(pTriangleVertices[2].texcoord, w));
-    }
-#endif
 }
 
-float k15_edge_function(vector2f_t a, vector2f_t b, vector2f_t c)
+internal inline float _k15_edge_function(vector2f_t a, vector2f_t b, vector2f_t c)
 {
     return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
 
-void _k15_write_color_to_color_buffer(const pixel_shader_output_t* pPixelShaderOutput, uint32_t pixelCount, uint32_t* pColorBufferContent, uint32_t colorBufferStride, uint8_t redShift, uint8_t greenShift, uint8_t blueShift)
+internal void _k15_write_color_to_color_buffer(const pixel_shader_output_t* pPixelShaderOutput, uint32_t pixelCount, uint32_t* pColorBufferContent, uint32_t colorBufferStride, uint8_t redShift, uint8_t greenShift, uint8_t blueShift)
 {
     MemoryPrefetch0(pPixelShaderOutput->pColor);
     MemoryPrefetch0(pPixelShaderOutput->pScreenspaceX);
@@ -1321,27 +1392,27 @@ void _k15_write_color_to_color_buffer(const pixel_shader_output_t* pPixelShaderO
     const uint32_t restPixelCount = pixelCount & 0x3;
     const uint32_t widePixelCount = pixelCount - restPixelCount;
 
-    for( uint32_t pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += 4u)
+    for( uint32_t pixelIndex = 0; pixelIndex < widePixelCount; pixelIndex += 4u)
     {
         const uint8_t red[4u] = {
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 0].x * 255.f),
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 1].x * 255.f),
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 2].x * 255.f),
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 3].x * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 0].x) * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 1].x) * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 2].x) * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 3].x) * 255.f),
         };
 
         const uint8_t green[4u] = {
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 0].y * 255.f),
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 1].y * 255.f),
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 2].y * 255.f),
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 3].y * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 0].y) * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 1].y) * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 2].y) * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 3].y) * 255.f),
         };
 
         const uint8_t blue[4u] = {
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 0].z * 255.f),
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 1].z * 255.f),
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 2].z * 255.f),
-            float_to_uint8(pPixelShaderOutput->pColor[pixelIndex + 3].z * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 0].z) * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 1].z) * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 2].z) * 255.f),
+            float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex + 3].z) * 255.f),
         };
         
         const uint32_t colors[4u] = {
@@ -1366,9 +1437,9 @@ void _k15_write_color_to_color_buffer(const pixel_shader_output_t* pPixelShaderO
 
     for(uint32_t pixelIndex = widePixelCount; pixelIndex < pixelCount; ++pixelIndex)
     {
-        const uint8_t red   = float_to_uint8(pPixelShaderOutput->pColor[pixelIndex].x * 255.f);
-        const uint8_t green = float_to_uint8(pPixelShaderOutput->pColor[pixelIndex].y * 255.f);
-        const uint8_t blue  = float_to_uint8(pPixelShaderOutput->pColor[pixelIndex].z * 255.f);
+        const uint8_t red   = float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex].x) * 255.f);
+        const uint8_t green = float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex].y) * 255.f);
+        const uint8_t blue  = float_to_uint8(clamp01f(pPixelShaderOutput->pColor[pixelIndex].z) * 255.f);
 
         const uint32_t color = red << redShift | green << greenShift | blue << blueShift;
         const uint32_t colorMapIndex = pPixelShaderOutput->pScreenspaceX[pixelIndex] + pPixelShaderOutput->pScreenspaceY[pixelIndex] * colorBufferStride;
@@ -1376,40 +1447,15 @@ void _k15_write_color_to_color_buffer(const pixel_shader_output_t* pPixelShaderO
     }
 }
 
-template<bool DEPTH_WRITE_ENABLED>
-void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, barycentric_coordinates_buffer_t barycentricCoordinates, void* pColorBuffer, void* pDepthBuffer, uint32_t colorBufferStride, uint8_t redShift, uint8_t greenShift, uint8_t blueShift)
+template<bool DEPTH_WRITE_ENABLED = true>
+internal void _k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, pixel_shader_input_t pixelShaderInput, pixel_shader_output_t pixelShaderOutput, barycentric_coordinates_buffer_t barycentricCoordinates, void* pColorBuffer, void* pDepthBuffer, uint32_t colorBufferStride, uint32_t depthBufferStride, uint8_t redShift, uint8_t greenShift, uint8_t blueShift)
 {
-    constexpr alignas(16) const uint32_t outputBitMaskLUT[16][4] = {
-        {0x00000000, 0x00000000, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
-        {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
-        {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF}
-    };
-
-    pixel_shader_input_t pixelShaderInput = {};
-    pixel_shader_output_t pixelShaderOutput = {};
-
     const void* pUniformData = pDrawCallTriangles->pUniformData;
     pixel_shader_fnc_t pixelShader = pDrawCallTriangles->pixelShader;
 
     uint32_t* pColorBufferContent = (uint32_t*)pColorBuffer;
     float* pDepthBufferContent = (float*)pDepthBuffer;
 
-    vertex_t   triangleVertices[PixelShaderInputCount * 3] = {};
-
-    const vertex_format_t* pVertexFormat = pDrawCallTriangles->pVertexFormat;
     for(uint32_t triangleIndex = 0; triangleIndex < pDrawCallTriangles->screenspaceTriangleCount; ++triangleIndex)
     {
         const screenspace_triangle_t* pTriangle = pDrawCallTriangles->pScreenspaceTriangles + triangleIndex;
@@ -1429,7 +1475,7 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, barycentric_c
         const vector2f_t v0 = k15_create_vector2f(pTriangle->screenspaceVertexPositions[0].x, pTriangle->screenspaceVertexPositions[0].y);
         const vector2f_t v1 = k15_create_vector2f(pTriangle->screenspaceVertexPositions[1].x, pTriangle->screenspaceVertexPositions[1].y);
         const vector2f_t v2 = k15_create_vector2f(pTriangle->screenspaceVertexPositions[2].x, pTriangle->screenspaceVertexPositions[2].y);
-        const float triangleArea = k15_edge_function(v2, v1, v0);
+        const float triangleArea = _k15_edge_function(v2, v1, v0);
         const float oneOverTriangleArea = 1.0f / triangleArea;
 
 #ifdef USE_SSE
@@ -1455,12 +1501,14 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, barycentric_c
 #endif
         for(uint32_t y = pTriangle->boundingBox.y1; y < pTriangle->boundingBox.y2; y += PixelShaderTileSize)
         {
-            const uint32_t yStep = get_min(PixelShaderTileSize, (pTriangle->boundingBox.y2 - y));
+            const uint32_t yDelta = (pTriangle->boundingBox.y2 - y);
+            const uint32_t yStep = get_min(PixelShaderTileSize, yDelta);
             const uint32_t tileYEnd = y + yStep;
 
             for(uint32_t x = pTriangle->boundingBox.x1; x < pTriangle->boundingBox.x2; x += PixelShaderTileSize)
             {   
-                const uint32_t xStep = get_min(PixelShaderTileSize, (pTriangle->boundingBox.x2 - x));
+                const uint32_t xDelta = (pTriangle->boundingBox.x2 - x);
+                const uint32_t xStep = get_min(PixelShaderTileSize, xDelta);
                 const uint32_t tileXEnd = x + xStep;
 
                 uint32_t pixelIndex = 0;
@@ -1478,33 +1526,32 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, barycentric_c
                         };
 
                         const float w0[] = {
-                            k15_edge_function(v1, v0, pixelCoordinates[0]),
-                            k15_edge_function(v1, v0, pixelCoordinates[1]),
-                            k15_edge_function(v1, v0, pixelCoordinates[2]),
-                            k15_edge_function(v1, v0, pixelCoordinates[3])
+                            _k15_edge_function(v1, v0, pixelCoordinates[0]),
+                            _k15_edge_function(v1, v0, pixelCoordinates[1]),
+                            _k15_edge_function(v1, v0, pixelCoordinates[2]),
+                            _k15_edge_function(v1, v0, pixelCoordinates[3])
                         };
 
                         const float w1[] = {
-                            k15_edge_function(v2, v1, pixelCoordinates[0]),
-                            k15_edge_function(v2, v1, pixelCoordinates[1]),
-                            k15_edge_function(v2, v1, pixelCoordinates[2]),
-                            k15_edge_function(v2, v1, pixelCoordinates[3])
+                            _k15_edge_function(v2, v1, pixelCoordinates[0]),
+                            _k15_edge_function(v2, v1, pixelCoordinates[1]),
+                            _k15_edge_function(v2, v1, pixelCoordinates[2]),
+                            _k15_edge_function(v2, v1, pixelCoordinates[3])
                         };
 
                         const float w2[] = {
-                            k15_edge_function(v0, v2, pixelCoordinates[0]),
-                            k15_edge_function(v0, v2, pixelCoordinates[1]),
-                            k15_edge_function(v0, v2, pixelCoordinates[2]),
-                            k15_edge_function(v0, v2, pixelCoordinates[3])
+                            _k15_edge_function(v0, v2, pixelCoordinates[0]),
+                            _k15_edge_function(v0, v2, pixelCoordinates[1]),
+                            _k15_edge_function(v0, v2, pixelCoordinates[2]),
+                            _k15_edge_function(v0, v2, pixelCoordinates[3])
                         };
 
    
                         // return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 #endif
 
-                        const int pixelCoverageMaskSelector = 32 - (4u - get_min(4u, tileXEnd - tileX) * 8);
-                        const uint32_t depthBufferOffsetInBytes = tileX + tileY * colorBufferStride;
-                        MemoryPrefetch0(pDepthBufferContent + depthBufferOffsetInBytes);
+                        const uint32_t depthBufferOffset = tileX + tileY * depthBufferStride;
+                        MemoryPrefetch0(pDepthBufferContent + depthBufferOffset);
 
                         const __m128i pixelCoordinatesX = _mm_add_epi32(_mm_set1_epi32(tileX), _mm_set_epi32(3, 2, 1, 0));
                         const __m128i pixelCoordinatesY = _mm_set1_epi32(tileY);
@@ -1515,26 +1562,21 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, barycentric_c
                         const __m128 edge0Term1 = _mm_sub_ps(tileYWide, v1WideY);
                         const __m128 edge0Term3 = _mm_sub_ps(tileXWide, v1WideX);
                         const __m128 w0Wide     = _mm_fmsub_ps(edge0Term0, edge0Term1, _mm_mul_ps(edge0Term2, edge0Term3));
-                        const __m128i w0NegMask = _mm_castps_si128(_mm_cmplt_ps(w0Wide, _mm_setzero_ps()));
+                        const __m128i w0Mask    = _mm_castps_si128(_mm_cmpgt_ps(w0Wide, _mm_setzero_ps()));
 
                         const __m128 edge1Term1 = _mm_sub_ps(tileYWide, v2WideY);
                         const __m128 edge1Term3 = _mm_sub_ps(tileXWide, v2WideX);
                         const __m128 w1Wide     = _mm_fmsub_ps(edge1Term0, edge1Term1, _mm_mul_ps(edge1Term2, edge1Term3));
-                        const __m128i w1NegMask = _mm_castps_si128(_mm_cmplt_ps(w1Wide,  _mm_setzero_ps()));
+                        const __m128i w1Mask    = _mm_castps_si128(_mm_cmpgt_ps(w1Wide,  _mm_setzero_ps()));
 
                         const __m128 w2Wide     = _mm_sub_ps(triangleAreaWide, _mm_add_ps(w0Wide, w1Wide));
-                        const __m128i w2NegMask = _mm_castps_si128(_mm_cmplt_ps(w2Wide,  _mm_setzero_ps()));
+                        const __m128i w2Mask    = _mm_castps_si128(_mm_cmpgt_ps(w2Wide,  _mm_setzero_ps()));
 
-                        const __m128i pixelMask = _mm_or_si128(_mm_or_si128(w0NegMask, w1NegMask), w2NegMask);
-                        const __m128i pixelCoverageMask = _mm_srai_epi32(pixelMask, pixelCoverageMaskSelector);
-
-                        if(_mm_test_all_ones(pixelMask) == 1)
+                        const __m128i pixelMask = _mm_and_si128(_mm_and_si128(w0Mask, w1Mask), w2Mask);
+                        if(_mm_test_all_zeros(_mm_set1_epi32(0xFFFFFFFF), pixelMask) == 1)
                         {
                             continue;
                         }
-
-                        const __m128i invPixelMask = _mm_andnot_si128(pixelMask, _mm_set1_epi32(0xFFFFFFFF));
-
 #ifdef USE_TEST_CODE
                         const float u[] = {
                             w0[0] * oneOverTriangleArea,
@@ -1569,24 +1611,19 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, barycentric_c
                         const __m128 wWide = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_add_ps(uWide, vWide));
 
                         const __m128 newDepthBufferZ = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_fmadd_ps(v0WideZ, uWide, _mm_fmadd_ps(v1WideZ, vWide, _mm_mul_ps(v2WideZ, wWide))));
-                        const __m128 oldDepthBufferZ = _mm_load_ps(pDepthBufferContent + depthBufferOffsetInBytes);
+                        const __m128 oldDepthBufferZ = _mm_load_ps(pDepthBufferContent + depthBufferOffset);
 
                         __m128i depthBufferMask = _mm_castps_si128(_mm_cmpgt_ps(newDepthBufferZ, oldDepthBufferZ));
-                        depthBufferMask = _mm_and_si128(depthBufferMask, invPixelMask);
+                        depthBufferMask = _mm_and_si128(depthBufferMask, pixelMask);
 
                         if( DEPTH_WRITE_ENABLED )
                         {
-#if 0
-                            _mm_maskstore_ps(pDepthBufferContent + depthBufferOffsetInBytes, depthBufferMask, newDepthBufferZ);
-#else
-                            const __m128 depthBufferZ = _mm_blendv_ps(oldDepthBufferZ, newDepthBufferZ, _mm_castsi128_ps(depthBufferMask));
-                            _mm_store_ps(pDepthBufferContent + depthBufferOffsetInBytes, depthBufferZ);
-#endif
+                            _mm_maskstore_ps(pDepthBufferContent + depthBufferOffset, depthBufferMask, newDepthBufferZ);
                         }
 
                         //FK: Extract 4-bit bit mask from depthBufferMask
-                        __m128i pixelBits = _mm_srl_epi32(depthBufferMask, _mm_set1_epi32(31));
-                        pixelBits = _mm_shl_epi32(pixelBits, _mm_set_epi32(0, 1, 2, 3));
+                        __m128i pixelBits = _mm_srlv_epi32(depthBufferMask, _mm_set1_epi32(31));
+                        pixelBits = _mm_sllv_epi32(pixelBits, _mm_set_epi32(3, 2, 1, 0));
 
                         int outputMaskLUTIndex = _mm_extract_epi32(pixelBits, 0);
                         outputMaskLUTIndex |= _mm_extract_epi32(pixelBits, 1);
@@ -1594,26 +1631,36 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, barycentric_c
                         outputMaskLUTIndex |= _mm_extract_epi32(pixelBits, 3);
 
                         RuntimeAssert(outputMaskLUTIndex < 16);
-                        __m128i outputMask = _mm_load_si128((const __m128i*)(outputBitMaskLUT[outputMaskLUTIndex]));
+                        const __m128i outputMask = _mm_load_si128((const __m128i*)(OutputBitMaskLUT[outputMaskLUTIndex]));
+                        const __m128i blendMask = _mm_load_si128((const __m128i*)(ShuffleBitMaskLUT[outputMaskLUTIndex]));
 
-                        _mm_maskstore_epi32((int*)(pixelShaderInput.pScreenspaceX + pixelIndex), outputMask, pixelCoordinatesX);
+                        const __m128 uWideShuffled = _mm_permutevar_ps(uWide, blendMask);
+                        const __m128 vWideShuffled = _mm_permutevar_ps(vWide, blendMask);
+                        const __m128i pixelCoordinatesXShuffled = _mm_cvtps_epi32(_mm_permutevar_ps(tileXWide, blendMask));
+
+                        _mm_maskstore_epi32((int*)(pixelShaderInput.pScreenspaceX + pixelIndex), outputMask, pixelCoordinatesXShuffled);
                         _mm_maskstore_epi32((int*)(pixelShaderInput.pScreenspaceY + pixelIndex), outputMask, pixelCoordinatesY);
-                        _mm_maskstore_ps((barycentricCoordinates.pU + pixelIndex), outputMask, vWide);
-                        _mm_maskstore_ps((barycentricCoordinates.pV + pixelIndex), outputMask, wWide);
+                        _mm_maskstore_ps((barycentricCoordinates.pU + pixelIndex), outputMask, uWideShuffled);
+                        _mm_maskstore_ps((barycentricCoordinates.pV + pixelIndex), outputMask, vWideShuffled);
 
                         const uint32_t pixelAddedThisIteration = __popcnt(outputMaskLUTIndex);
                         pixelIndex += pixelAddedThisIteration;
                     }
                 }
 
-#if 1
                 const uint32_t pixelCount = pixelIndex;
-                k15_generate_barycentric_vertices(&pixelShaderInput.vertexAttributes, barycentricCoordinates, pTriangle->vertices, pixelCount);
+                pixelIndex = 0;
+
+                if( pixelCount == 0u )
+                {
+                    continue;
+                }
+
+                _k15_generate_barycentric_vertices(&pixelShaderInput, barycentricCoordinates, pixelCount, pTriangle->vertices);
                 pixelShader(&pixelShaderInput, &pixelShaderOutput, pixelCount, pUniformData);
+                _k15_reset_stack_allocator(pixelShaderInput.pStackAllocator);
                 _k15_write_color_to_color_buffer(&pixelShaderOutput, pixelCount, pColorBufferContent, colorBufferStride, redShift, greenShift, blueShift);
 #endif
-#endif
-                pixelIndex = 0;
                 
             }
         }
@@ -1622,13 +1669,13 @@ void k15_draw_triangles(draw_call_triangles_t* pDrawCallTriangles, barycentric_c
 }
 
 //https://graphics.stanford.edu/~seander/bithacks.html#DetermineIfPowerOf2
-inline bool _k15_is_pow2(uint32_t value)
+internal inline bool _k15_is_pow2(uint32_t value)
 {
     return (value & (value - 1)) == 0;
 }
 
 //https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
-inline uint32_t _k15_get_next_pow2(uint32_t value)
+internal inline uint32_t _k15_get_next_pow2(uint32_t value)
 {
     if(_k15_is_pow2(value))
     {
@@ -1661,7 +1708,8 @@ software_rasterizer_context_init_parameters_t k15_create_default_software_raster
     software_rasterizer_context_init_parameters_t defaultParameters = {};
     defaultParameters.backBufferHeight  = screenHeight;
     defaultParameters.backBufferWidth   = screenWidth;
-    defaultParameters.backBufferStride  = screenWidth;
+    defaultParameters.colorBufferStride = screenWidth;
+    defaultParameters.depthBufferStride = screenWidth;
     defaultParameters.blueShift         = 16;
     defaultParameters.greenShift        = 8;
     defaultParameters.redShift          = 0;
@@ -1676,12 +1724,58 @@ software_rasterizer_context_init_parameters_t k15_create_default_software_raster
     return defaultParameters;
 }
 
+bool _k15_create_pixel_shader_output_buffers(pixel_shader_output_t* pPixelShaderOutput, uint32_t outputCount)
+{
+    pPixelShaderOutput->pColor = (vector4f_t*)malloc(outputCount * sizeof(vector4f_t));
+    if( pPixelShaderOutput->pColor == nullptr )
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool _k15_create_pixel_shader_input_buffers(pixel_shader_input_t* pPixelShaderInput, uint32_t inputCount)
+{
+    pPixelShaderInput->pDepth = (float*)malloc(inputCount * sizeof(float));
+    if( pPixelShaderInput->pDepth == nullptr )
+    {
+        return false;
+    }
+
+    pPixelShaderInput->pScreenspaceX = (uint32_t*)malloc(inputCount * sizeof(uint32_t));
+    if( pPixelShaderInput->pScreenspaceX == nullptr )
+    {
+        return false;
+    }
+
+    pPixelShaderInput->pScreenspaceY = (uint32_t*)malloc(inputCount * sizeof(uint32_t));
+    if( pPixelShaderInput->pScreenspaceY == nullptr )
+    {
+        return false;
+    }
+
+    pPixelShaderInput->pVertexData = (vertex_t*)malloc(inputCount * sizeof(vertex_t));
+    if( pPixelShaderInput->pVertexData == nullptr )
+    {
+        return false;
+    }
+
+    if( !_k15_create_stack_allocator(&pPixelShaderInput->pStackAllocator, 1024*1024 ) )
+    {
+        return false;
+    }
+
+    return true;
+}
+
 bool k15_create_software_rasterizer_context(software_rasterizer_context_t** pOutContextPtr, const software_rasterizer_context_init_parameters_t* pParameters)
 {
     software_rasterizer_context_t* pContext = (software_rasterizer_context_t*)malloc(sizeof(software_rasterizer_context_t));
     pContext->backBufferHeight              = pParameters->backBufferHeight;
     pContext->backBufferWidth               = pParameters->backBufferWidth;
-    pContext->backBufferStride              = pParameters->backBufferStride;
+    pContext->colorBufferStride             = pParameters->colorBufferStride;
+    pContext->depthBufferStride             = pParameters->depthBufferStride;
     pContext->redShift                      = pParameters->redShift;
     pContext->greenShift                    = pParameters->greenShift;
     pContext->blueShift                     = pParameters->blueShift;
@@ -1774,6 +1868,19 @@ bool k15_create_software_rasterizer_context(software_rasterizer_context_t** pOut
         return false;
     }
 
+    if(!_k15_create_pixel_shader_input_buffers(&pContext->bufferedPixelShaderInput, PixelShaderInputCount))
+    {
+        return false;
+    }
+
+    if(!_k15_create_pixel_shader_output_buffers(&pContext->bufferedPixelShaderOutput, PixelShaderInputCount))
+    {
+        return false;
+    }
+
+    pContext->bufferedPixelShaderOutput.pScreenspaceX = pContext->bufferedPixelShaderInput.pScreenspaceX;
+    pContext->bufferedPixelShaderOutput.pScreenspaceY = pContext->bufferedPixelShaderInput.pScreenspaceY;
+
     *pOutContextPtr = pContext;
     return true;
 }
@@ -1857,7 +1964,7 @@ void k15_copy_vertices_for_vertex_shader(vertex_shader_input_t* pTriangleVertice
     }
 }
 
-void k15_transform_vertices(draw_call_triangles_t* pDrawCallTriangles)
+void _k15_transform_vertices(draw_call_triangles_t* pDrawCallTriangles)
 {
     vertex_shader_fnc_t vertexShader = pDrawCallTriangles->vertexShader;
     void* pUniformData = pDrawCallTriangles->pUniformData;
@@ -2014,7 +2121,7 @@ bool k15_cull_outside_frustum_triangles(draw_call_triangles_t* pDrawCallTriangle
     return true;
 }
 
-bool k15_cull_triangles(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffer_t<triangle_t>* pVisibleTriangleBuffer, bool backFaceCullingEnabeld)
+internal bool _k15_cull_triangles(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffer_t<triangle_t>* pVisibleTriangleBuffer, bool backFaceCullingEnabeld)
 {
     if(backFaceCullingEnabeld)
     {
@@ -2026,59 +2133,14 @@ bool k15_cull_triangles(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffe
     }
 }
 
-inline float _k15_signf(float value)
+internal inline float _k15_signf(float value)
 {
     return value > 0.0f ? 1.0f : -1.0f;
 }
 
-inline float k15_vector4f_length_squared(vector4f_t vector)
+internal inline float k15_vector4f_length_squared(vector4f_t vector)
 {
     return vector.x * vector.x + vector.y * vector.y + vector.z * vector.z;
-}
-
-void _k15_calculate_intersection_with_clip_planes(vector4f_t* pOutIntersectionPoint, const vector4f_t startPosition, const vector4f_t endPosition)
-{
-    const vector4f_t delta = k15_vector4f_sub(endPosition, startPosition);
-    const float posW = startPosition.w;
-    const float negW = -posW;
-    
-    vector4f_t intersectionPoint = startPosition;
-    const float absW = fabsf(intersectionPoint.w);
-    float tx = 0.0f;
-    float ty = 0.0f;
-    float tz = 0.0f;
-
-    if(fabsf(intersectionPoint.x) > posW)
-    {
-        const float sign = _k15_signf(intersectionPoint.x);
-        tx = fabsf((intersectionPoint.x - (sign * absW)) / delta.x);
-
-        intersectionPoint.x = intersectionPoint.x + tx * delta.x;
-        intersectionPoint.y = startPosition.y + delta.y * (negW - startPosition.x) / delta.x;
-    }
-
-    if(fabsf(intersectionPoint.y) > posW)
-    {
-        const float sign = _k15_signf(intersectionPoint.y);
-        ty = fabsf((intersectionPoint.y - (sign * absW)) / delta.y);
-        intersectionPoint.y = intersectionPoint.y + ty * delta.y;
-    }
-
-    if(fabsf(intersectionPoint.z) > posW)
-    {
-        const float sign = _k15_signf(intersectionPoint.z);
-        tz = fabsf((intersectionPoint.z - (sign * absW)) / delta.z);
-        intersectionPoint.z = intersectionPoint.z + tz * delta.z;
-    }
-
-    vector4f_t intersectionDelta = k15_vector4f_sub(intersectionPoint, startPosition);
-    const float deltaLength = k15_vector4f_length_squared(delta);
-    const float intersectionDeltaLength = k15_vector4f_length_squared(intersectionDelta);
-
-    const float tw = intersectionDeltaLength / deltaLength;
-    intersectionPoint.w = intersectionPoint.w + tw * delta.w;
-
-    *pOutIntersectionPoint = intersectionPoint;
 }
 
 enum clip_flag_t : uint8_t
@@ -2091,7 +2153,7 @@ enum clip_flag_t : uint8_t
     Far     = 0b100000
 };
 
-void _k15_get_clipping_flags(const vertex_t* restrict_modifier ppPoints, uint8_t* restrict_modifier ppClippingFlags)
+internal void _k15_get_clipping_flags(const vertex_t* restrict_modifier ppPoints, uint8_t* restrict_modifier ppClippingFlags)
 {
     for( uint8_t pointIndex = 0; pointIndex < 2u; ++pointIndex )
     {
@@ -2132,7 +2194,7 @@ void _k15_get_clipping_flags(const vertex_t* restrict_modifier ppPoints, uint8_t
     }
 }
 
-vertex_t k15_interpolate_vertex(const vertex_t* restrict_modifier pStart, const vertex_t* restrict_modifier pEnd, float t)
+internal vertex_t _k15_interpolate_vertex(const vertex_t* restrict_modifier pStart, const vertex_t* restrict_modifier pEnd, float t)
 {
     vertex_t interpolatedVertex = {};
     interpolatedVertex.position.x = pStart->position.x + (pEnd->position.x - pStart->position.x) * t;
@@ -2155,7 +2217,7 @@ vertex_t k15_interpolate_vertex(const vertex_t* restrict_modifier pStart, const 
     return interpolatedVertex;
 }
 
-clipped_vertex_t _k15_create_clipped_vertex(const vertex_t* pVertex, uint32_t triangleIndex)
+internal clipped_vertex_t _k15_create_clipped_vertex(const vertex_t* pVertex, uint32_t triangleIndex)
 {
     clipped_vertex_t clippedVertex;
     memcpy(&clippedVertex, pVertex, sizeof(vertex_t));
@@ -2164,7 +2226,7 @@ clipped_vertex_t _k15_create_clipped_vertex(const vertex_t* pVertex, uint32_t tr
     return clippedVertex;
 }
 
-bool k15_generate_clip_triangles_from_clip_vertices(clipped_vertex_t* pClippedVertices, uint32_t vertexCount, dynamic_buffer_t<triangle_t>* pClippedTriangles)
+internal bool _k15_generate_clip_triangles_from_clip_vertices(clipped_vertex_t* pClippedVertices, uint32_t vertexCount, dynamic_buffer_t<triangle_t>* pClippedTriangles)
 {
     if( vertexCount < 3u )
     {
@@ -2229,7 +2291,7 @@ bool k15_generate_clip_triangles_from_clip_vertices(clipped_vertex_t* pClippedVe
     return true;
 }
 
-bool k15_clip_triangles(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffer_t<triangle_t>* pClippedTriangles)
+internal bool _k15_clip_triangles(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffer_t<triangle_t>* pClippedTriangles)
 {
     const uint32_t clippedTrianglesCountStart = pClippedTriangles->count;
 
@@ -2241,7 +2303,7 @@ bool k15_clip_triangles(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffe
     {
         if(localClippedVertices.count + 6u >= localClippedVertices.capacity)
         {
-            if(!k15_generate_clip_triangles_from_clip_vertices(localClippedVertices.pStaticData, localClippedVertices.count, pClippedTriangles))
+            if(!_k15_generate_clip_triangles_from_clip_vertices(localClippedVertices.pStaticData, localClippedVertices.count, pClippedTriangles))
             {
                 return false;
             }
@@ -2298,32 +2360,32 @@ bool k15_clip_triangles(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffe
                 if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Left )
                 {
                     const float t = ( -edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.x ) / ( ( -edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.x ) - ( -edgeVertices[!vertexIndex].position.w - edgeVertices[!vertexIndex].position.x ) );
-                    intersectionVertex = k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
+                    intersectionVertex = _k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
                 }
                 else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Right )
                 {
                     const float t = ( edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.x ) / ( ( edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.x ) - ( edgeVertices[!vertexIndex].position.w - edgeVertices[!vertexIndex].position.x ) );
-                    intersectionVertex = k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
+                    intersectionVertex = _k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
                 }
                 else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Top )
                 {
                     const float t = ( -edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.y ) / ( ( -edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.y ) - ( -edgeVertices[!vertexIndex].position.w - edgeVertices[!vertexIndex].position.y ) );
-                    intersectionVertex = k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
+                    intersectionVertex = _k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
                 }
                 else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Bottom )
                 {
                     const float t = ( edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.y ) / ( ( edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.y ) - ( edgeVertices[!vertexIndex].position.w - edgeVertices[!vertexIndex].position.y ) );
-                    intersectionVertex = k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
+                    intersectionVertex = _k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
                 }
                 else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Far )
                 {
                     const float t = ( -edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.z ) / ( ( -edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.z ) - ( -edgeVertices[!vertexIndex].position.w - edgeVertices[!vertexIndex].position.z ) );
-                    intersectionVertex = k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
+                    intersectionVertex = _k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
                 }
                 else if( clippingFlags[vertexIndex] & (uint8_t)clip_flag_t::Near )
                 {
                     const float t = ( edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.z ) / ( ( edgeVertices[vertexIndex].position.w - edgeVertices[vertexIndex].position.z ) - ( edgeVertices[!vertexIndex].position.w - edgeVertices[!vertexIndex].position.z ) );
-                    intersectionVertex = k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
+                    intersectionVertex = _k15_interpolate_vertex( &intersectionVertex, edgeVertices + !vertexIndex, t);
                 }
 
                 edgeVertices[vertexIndex] = intersectionVertex;
@@ -2336,7 +2398,7 @@ bool k15_clip_triangles(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffe
 
     if(localClippedVertices.count > 0u)
     {
-        if(!k15_generate_clip_triangles_from_clip_vertices(localClippedVertices.pStaticData, localClippedVertices.count, pClippedTriangles))
+        if(!_k15_generate_clip_triangles_from_clip_vertices(localClippedVertices.pStaticData, localClippedVertices.count, pClippedTriangles))
         {
             return false;
         }
@@ -2350,7 +2412,7 @@ bool k15_clip_triangles(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffe
     return true;
 }
 
-bool k15_project_triangles_into_screenspace(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffer_t<screenspace_triangle_t>* pScreenspaceTriangleBuffer, uint32_t backBufferWidth, uint32_t backBufferHeight)
+internal bool _k15_project_triangles_into_screenspace(draw_call_triangles_t* pDrawCallTriangles, dynamic_buffer_t<screenspace_triangle_t>* pScreenspaceTriangleBuffer, uint32_t backBufferWidth, uint32_t backBufferHeight)
 {
     pDrawCallTriangles->pScreenspaceTriangles = _k15_dynamic_buffer_push_back(pScreenspaceTriangleBuffer, pDrawCallTriangles->triangleCount);
     if( pDrawCallTriangles->pScreenspaceTriangles == nullptr )
@@ -2457,7 +2519,7 @@ void k15_draw_text_formatted(uint8_t* pColorBuffer, const bitmap_font_t* pFont, 
     k15_draw_text(pColorBuffer, pFont, colorBufferWidth, colorBufferHeight, colorBufferStride, x, y, textBuffer);
 }
 
-bool k15_generate_triangles(draw_call_triangles_t* pOutDrawCallTriangles, dynamic_buffer_t<triangle_t>* pTriangleBuffer, const draw_call_t* pDrawCall)
+internal bool _k15_generate_triangles(draw_call_triangles_t* pOutDrawCallTriangles, dynamic_buffer_t<triangle_t>* pTriangleBuffer, const draw_call_t* pDrawCall)
 {
     const uint32_t triangleCount = pDrawCall->vertexCount / 3;
     triangle_t* pTriangles = _k15_dynamic_buffer_push_back(pTriangleBuffer, triangleCount);
@@ -2482,37 +2544,40 @@ bool k15_generate_triangles(draw_call_triangles_t* pOutDrawCallTriangles, dynami
 
 void k15_draw_frame(software_rasterizer_context_t* pContext)
 {
+    __stosd((unsigned long*)pContext->pDepthBuffer[pContext->currentColorBufferIndex], 0u, pContext->backBufferWidth * pContext->backBufferHeight);
+	__stosd((unsigned long*)pContext->pColorBuffer[pContext->currentColorBufferIndex], 0u, pContext->backBufferWidth * pContext->backBufferHeight);
+
     for(uint32_t drawCallIndex = 0; drawCallIndex < pContext->drawCalls.count; ++drawCallIndex)
     {
         draw_call_t* pDrawCall = pContext->drawCalls.pData + drawCallIndex;
 
         draw_call_triangles_t drawCallTriangles;
-        if(!k15_generate_triangles(&drawCallTriangles, &pContext->triangles, pDrawCall))
+        if(!_k15_generate_triangles(&drawCallTriangles, &pContext->triangles, pDrawCall))
         {
             //TODO: log error
             continue;
         }
         
-        k15_transform_vertices(&drawCallTriangles);
-        if(!k15_cull_triangles(&drawCallTriangles, &pContext->visibleTriangles, pContext->settings.backFaceCullingEnabled))
+        _k15_transform_vertices(&drawCallTriangles);
+        if(!_k15_cull_triangles(&drawCallTriangles, &pContext->visibleTriangles, pContext->settings.backFaceCullingEnabled))
         {
             //TODO: log error
             continue;
         }
 
-        if(!k15_clip_triangles(&drawCallTriangles, &pContext->clippedTriangles))
+        if(!_k15_clip_triangles(&drawCallTriangles, &pContext->clippedTriangles))
         {
             //TODO: log error
             continue;
         }
 
-        if(!k15_project_triangles_into_screenspace(&drawCallTriangles, &pContext->screenspaceTriangles, pContext->backBufferWidth, pContext->backBufferHeight))
+        if(!_k15_project_triangles_into_screenspace(&drawCallTriangles, &pContext->screenspaceTriangles, pContext->backBufferWidth, pContext->backBufferHeight))
         {
             //TODO: log error
             continue;
         }
 
-        k15_draw_triangles(&drawCallTriangles, pContext->barycentricCoordinatesBuffer, pContext->pColorBuffer[pContext->currentColorBufferIndex], pContext->pDepthBuffer[pContext->currentColorBufferIndex], pContext->backBufferStride, pContext->redShift, pContext->greenShift, pContext->blueShift);
+        _k15_draw_triangles(&drawCallTriangles, pContext->bufferedPixelShaderInput, pContext->bufferedPixelShaderOutput, pContext->barycentricCoordinatesBuffer, pContext->pColorBuffer[pContext->currentColorBufferIndex], pContext->pDepthBuffer[pContext->currentColorBufferIndex], pContext->colorBufferStride, pContext->depthBufferStride, pContext->redShift, pContext->greenShift, pContext->blueShift);
 
         pContext->triangles.count = 0;
         pContext->visibleTriangles.count = 0;
@@ -2523,7 +2588,6 @@ void k15_draw_frame(software_rasterizer_context_t* pContext)
     pContext->drawCalls.count = 0;
 
     _k15_reset_stack_allocator(pContext->pDrawCallDataAllocator);
-    memset(pContext->pDepthBuffer[pContext->currentColorBufferIndex], 0, pContext->backBufferWidth * pContext->backBufferHeight * sizeof(float));
 }
 
 void k15_change_color_buffers(software_rasterizer_context_t* pContext, void** restrict_modifier pColorBuffers, uint8_t colorBufferCount, uint32_t widthInPixels, uint32_t heightInPixels, uint32_t strideInBytes)
@@ -2536,7 +2600,7 @@ void k15_change_color_buffers(software_rasterizer_context_t* pContext, void** re
     pContext->colorBufferCount = colorBufferCount;
     pContext->backBufferWidth = widthInPixels;
     pContext->backBufferHeight = heightInPixels;
-    pContext->backBufferStride = strideInBytes;
+    pContext->colorBufferStride = strideInBytes;
 }
 
 bool k15_is_valid_vertex_buffer(const vertex_buffer_handle_t vertexBuffer)
@@ -2596,7 +2660,7 @@ pixel_shader_handle_t k15_create_pixel_shader(software_rasterizer_context_t* pCo
     return handle;
 }
 
-vertex_buffer_handle_t k15_create_vertex_buffer(software_rasterizer_context_t* pContext, const vertex_t* pVertexData, uint32_t vertexCount)
+vertex_buffer_handle_t k15_create_vertex_buffer(software_rasterizer_context_t* pContext, const vertex_t* pVertexData, uint32_t vertexCount )
 {
     RuntimeAssert(pContext != nullptr);
     RuntimeAssert(pVertexData != nullptr);

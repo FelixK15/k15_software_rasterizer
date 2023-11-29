@@ -58,6 +58,7 @@ int screenWidth = virtualScreenWidth*screenScaleFactor;
 int screenHeight = virtualScreenHeight*screenScaleFactor;
 
 bool appHasFocus = true;
+bool drawDepthBuffer = false;
 
 vector4f_t cameraPos = {0.0f, 0.0f, 2.5f, 1.0f};
 vector4f_t cameraVelocity = {};
@@ -71,19 +72,19 @@ pixel_shader_handle_t pixelShaderHandle;
 uniform_buffer_handle_t uniformBufferHandle;
 
 constexpr vertex_t test_triangle_vertices[] = {
-	k15_create_vertex( k15_create_vector4f(  0.5f, -0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f(1.0f, 0.0f, 0.0f, 1.0f), k15_create_vector2f( 1.0f, 0.0f ) ),
-	k15_create_vertex( k15_create_vector4f(  0.5f,  0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f(1.0f, 0.0f, 0.0f, 1.0f), k15_create_vector2f( 1.0f, 1.0f ) ),
-	k15_create_vertex( k15_create_vector4f( -0.5f, -0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f(1.0f, 0.0f, 0.0f, 1.0f), k15_create_vector2f( 0.0f, 1.0f ) )
+	{ k15_create_vector4f(  0.5f, -0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f( 1.0f, 0.0f, 1.0f, 0.0f), k15_create_vector2f( 1.0f, 0.0f ) },
+	{ k15_create_vector4f(  0.5f,  0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f( 1.0f, 0.0f, 1.0f, 0.0f), k15_create_vector2f( 1.0f, 1.0f ) },
+	{ k15_create_vector4f( -0.5f, -0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f( 1.0f, 0.0f, 1.0f, 0.0f), k15_create_vector2f( 0.0f, 1.0f ) }
 };
 
 constexpr vertex_t test_quad_vertices[] = {
-	k15_create_vertex( k15_create_vector4f(  0.5f, -0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f(1.0f, 0.0f, 0.0f, 1.0f), k15_create_vector2f( 1.0f, 0.0f ) ),
-	k15_create_vertex( k15_create_vector4f(  0.5f,  0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f(1.0f, 0.0f, 0.0f, 1.0f), k15_create_vector2f( 1.0f, 1.0f ) ),
-	k15_create_vertex( k15_create_vector4f( -0.5f,  0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f(1.0f, 0.0f, 0.0f, 1.0f), k15_create_vector2f( 0.0f, 1.0f ) ),
+	{ k15_create_vector4f(  0.5f, -0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f( 1.0f, 0.0f, 1.0f, 0.0f), k15_create_vector2f( 1.0f, 0.0f ) },
+	{ k15_create_vector4f(  0.5f,  0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f( 1.0f, 0.0f, 1.0f, 0.0f), k15_create_vector2f( 1.0f, 1.0f ) },
+	{ k15_create_vector4f( -0.5f,  0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f( 1.0f, 0.0f, 1.0f, 0.0f), k15_create_vector2f( 0.0f, 1.0f ) },
 
-	k15_create_vertex( k15_create_vector4f( -0.5f,  0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f(1.0f, 0.0f, 0.0f, 1.0f), k15_create_vector2f( 0.0f, 1.0f ) ),
-	k15_create_vertex( k15_create_vector4f( -0.5f, -0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f(1.0f, 0.0f, 0.0f, 1.0f), k15_create_vector2f( 0.0f, 0.0f ) ),
-	k15_create_vertex( k15_create_vector4f(  0.5f, -0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f(1.0f, 0.0f, 0.0f, 1.0f), k15_create_vector2f( 1.0f, 0.0f ) )
+	{ k15_create_vector4f( -0.5f,  0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f( 1.0f, 0.0f, 1.0f, 0.0f), k15_create_vector2f( 0.0f, 1.0f ) },
+	{ k15_create_vector4f( -0.5f, -0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f( 1.0f, 0.0f, 1.0f, 0.0f), k15_create_vector2f( 0.0f, 0.0f ) },
+	{ k15_create_vector4f(  0.5f, -0.5f, 0.0f, 1.0f ), k15_create_vector4f( 0.0f, 0.0f, 1.0f, 0.0f), k15_create_vector4f( 1.0f, 0.0f, 1.0f, 0.0f), k15_create_vector2f( 1.0f, 0.0f ) }
 };
 
 struct loaded_model_t
@@ -753,12 +754,17 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	
 	if(wparam == VK_F2)
 	{
-		cameraAngles.x = -0.702f;
-		cameraAngles.y = -0.164f;
+		cameraAngles.x = -3.077f;
+		cameraAngles.y = -0.111f;
 		
-		cameraPos.x = -0.584f;
-		cameraPos.y = -0.574f;
-		cameraPos.z = 0.644f;
+		cameraPos.x = 0.025f;
+		cameraPos.y = -0.559f;
+		cameraPos.z = -0.332f;
+	}
+
+	if(wparam == VK_F3 && firstKeyDown)
+	{
+		drawDepthBuffer = !drawDepthBuffer;
 	}
 }
 
@@ -907,12 +913,6 @@ HWND setupWindow(HINSTANCE instance, int width, int height)
 
 		HDC deviceContext = GetDC(hwnd);
 		pBackBufferPixels = (uint32_t*)createGDIColorBuffer(deviceContext, &pBackBufferBitmapInfo, &backBufferBitmap, virtualScreenWidth, virtualScreenHeight);
-
-		if(pContext != nullptr)
-		{
-			uint32_t stride = virtualScreenWidth;
-			k15_change_color_buffers(pContext, (void**)&pBackBufferPixels, 1u, virtualScreenWidth, virtualScreenHeight, stride);
-		}
 	}
 	return hwnd;
 }
@@ -970,10 +970,10 @@ void vertexShader(vertex_shader_input_t* pInOutVertices, uint32_t vertexCount, c
 	
 }
 
-void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const void* pUniformData)
+void pixelShader(const pixel_shader_input_t* pPixelShaderInput, pixel_shader_output_t* pPixelShaderOutput, uint32_t pixelCount, const void* pUniformData)
 {
 	shader_uniform_data_t* pShaderData = (shader_uniform_data_t*)pUniformData;
-	texture_samples_t textureSamples = k15_sample_texture<sample_addressing_mode_t::mirror>(pShaderData->texture, pInOutPixels->vertexAttributes.texcoords, pixelCount);
+	texture_samples_t textureSamples = k15_sample_texture<sample_addressing_mode_t::clamp>(pShaderData->texture, pPixelShaderInput, pixelCount);
 	
 	const vector4f_t viewDir = pShaderData->viewDir;
 	const vector4f_t specColor = k15_create_vector4f(1.0f, 1.0f, 1.0f, 1.0f);
@@ -981,13 +981,13 @@ void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const 
 #if 0
 	for( uint32_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex )
 	{
-		vector4f_t color = k15_create_vector4f(pInOutPixels->vertexAttributes.positions[pixelIndex].x, pInOutPixels->vertexAttributes.positions[pixelIndex].y, pInOutPixels->vertexAttributes.positions[pixelIndex].z, 1.0f);
-		pInOutPixels->outputColors[pixelIndex] = color;
+		vector4f_t color = k15_create_vector4f(pPixelShaderInput->pVertexData[pixelIndex].texcoord.x, pPixelShaderInput->pVertexData[pixelIndex].texcoord.y, 0.0f, 1.0f);
+		pPixelShaderOutput->pColor[pixelIndex] = color;
 	}
 #else
 	for( uint32_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex )
 	{
-		vector4f_t color = k15_create_vector4f(textureSamples.colors[pixelIndex].x, textureSamples.colors[pixelIndex].y, textureSamples.colors[pixelIndex].z, textureSamples.colors[pixelIndex].w);
+		vector4f_t color = k15_create_vector4f(textureSamples.pColors[pixelIndex].x, textureSamples.pColors[pixelIndex].y, textureSamples.pColors[pixelIndex].z, textureSamples.pColors[pixelIndex].w);
 		color = k15_vector4f_hadamard(color, pShaderData->ambientColor);
 
 #if 0
@@ -1013,7 +1013,7 @@ void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const 
 			color = k15_vector4f_clamp01(k15_vector4f_add(color, k15_vector4f_scale(pShaderData->lights[lightIndex].color, distanceNormalized * lightAngle)));
 		}
 #endif
-		pInOutPixels->outputColors[pixelIndex] = color;
+		pPixelShaderOutput->pColor[pixelIndex] = color;
 	}
 #endif
 }
@@ -1021,7 +1021,7 @@ void pixelShader(pixel_shader_input_t* pInOutPixels, uint32_t pixelCount, const 
 loaded_model_t loadedModel = {};
 bool setup()
 {
-	pDepthBufferPixels = (float*)malloc(virtualScreenWidth * virtualScreenHeight * sizeof(float));
+	pDepthBufferPixels = (float*)_mm_malloc(virtualScreenWidth * virtualScreenHeight * sizeof(float), 16);
 	memset(pDepthBufferPixels, 0, virtualScreenWidth * virtualScreenHeight * sizeof(float));
 
 	software_rasterizer_context_init_parameters_t parameters = k15_create_default_software_rasterizer_context_parameters(virtualScreenWidth, virtualScreenHeight, (void**)&pBackBufferPixels, (void**)&pDepthBufferPixels, 1u);
@@ -1060,10 +1060,21 @@ bool setup()
 
 void drawBackBuffer(HDC deviceContext)
 {
+	if( drawDepthBuffer )
+	{
+		//Copy Depth buffer to "StretchDIBits-friendly" format
+		for(int32_t y = 0; y < virtualScreenHeight; ++y)
+		{
+			for(int32_t x = 0; x < virtualScreenWidth; ++x)
+			{
+				const uint8_t depthBufferValue = float_to_uint8(clamp(pDepthBufferPixels[x + y * virtualScreenWidth], 0.0f, 1.0f) * 255.f);
+				pBackBufferPixels[x + y * virtualScreenWidth] = depthBufferValue << 16 | depthBufferValue << 8 | depthBufferValue << 0;
+			}
+		}
+	}
+
 	StretchDIBits(deviceContext, 0, 0, screenWidth, screenHeight, 0, 0, virtualScreenWidth, virtualScreenHeight, 
 		pBackBufferPixels, pBackBufferBitmapInfo, DIB_RGB_COLORS, SRCCOPY);  
-
-	memset(pBackBufferPixels, 0u, virtualScreenWidth * virtualScreenHeight * sizeof(uint32_t));
 }
 
 void doFrame(float deltaTimeInMs)
@@ -1170,6 +1181,7 @@ void doFrame(float deltaTimeInMs)
 	k15_bind_pixel_shader(pContext, pixelShaderHandle);
 	k15_bind_uniform_buffer(pContext, uniformBufferHandle);
 
+#if 1
 	for( uint32_t subModelIndex = 0; subModelIndex < loadedModel.subModelCount; ++subModelIndex )
 	{
 		k15_bind_vertex_buffer(pContext, loadedModel.vertexBuffers[subModelIndex]);
@@ -1180,6 +1192,16 @@ void doFrame(float deltaTimeInMs)
 		k15_set_uniform_buffer_data(uniformBufferHandle, &shaderData, sizeof(shaderData), 0u);
 		k15_draw(pContext, loadedModel.vertexCounts[subModelIndex], 0u);
 	}
+#else
+	const uint32_t subModelIndex = 1u;
+	k15_bind_vertex_buffer(pContext, loadedModel.vertexBuffers[subModelIndex]);
+	k15_bind_texture(pContext, loadedModel.textures[subModelIndex], 0u);
+	shaderData.texture = loadedModel.textures[subModelIndex];
+	shaderData.normalMap = loadedModel.textures[1];
+	shaderData.viewDir = k15_create_vector4f(shaderData.viewProjMatrix.m20, shaderData.viewProjMatrix.m21, shaderData.viewProjMatrix.m22, 0.0f);
+	k15_set_uniform_buffer_data(uniformBufferHandle, &shaderData, sizeof(shaderData), 0u);
+	k15_draw(pContext, loadedModel.vertexCounts[subModelIndex], 0u);
+#endif
 
 	k15_draw_frame(pContext);
 	k15_swap_color_buffers(pContext);
