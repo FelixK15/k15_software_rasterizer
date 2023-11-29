@@ -198,12 +198,12 @@ constexpr vertex_t                              k15_create_vertex(vector4f_t pos
 #ifdef _MSC_BUILD
 #include <intrin.h>
 #define restrict_modifier       __restrict
-#define RuntimeAssert(x)        if(!(x)){  __debugbreak(); }
+#define NativeDebugBreak()      __debugbreak()
 #define BreakpointHook()        __nop()
 #else
 #warning No support for this compiler
 #define restrict_modifier
-#define RuntimeAssert(x)
+#define NativeDebugBreak()
 #define CompiletimeAssert(x)
 #define BreakpointHook()
 #endif
@@ -211,7 +211,8 @@ constexpr vertex_t                              k15_create_vertex(vector4f_t pos
 #if defined (_M_X64) || defined (_M_AMD64 ) || defined(__x86_64__)
 #include <immintrin.h>
 #include <smmintrin.h>
-#define MemoryPrefetch0(ptr) _mm_prefetch((const char*)ptr, _MM_HINT_T0)
+#define MemoryPrefetch0(ptr)    _mm_prefetch((const char*)(ptr), _MM_HINT_T0)
+#define MemoryPrefetchNTA(ptr)  _mm_prefetch((const char*)(ptr), _MM_HINT_NTA)
 #endif
 
 #define CompiletimeAssert(x)        static_assert(x)
@@ -224,6 +225,12 @@ constexpr vertex_t                              k15_create_vertex(vector4f_t pos
 
 #define clamp(v, min, max) (v)>(max)?(max):(v)<(min)?(min):(v)
 #define clamp01f(v) clamp(v, 0.0f, 1.0f)
+
+#ifdef K15_RELEASE_BUILD
+#define RuntimeAssert(x)
+#else
+#define RuntimeAssert(x)        if(!(x)){  NativeDebugBreak(); }
+#endif
 
 #define internal static
 
@@ -259,14 +266,16 @@ internal constexpr const matrix4x4f_t IdentityMatrix4x4[] = {
     0.0f, 0.0f, 0.0f, 1.0f
 };
 
-internal constexpr alignas(16) const uint32_t OutputBitMaskLUT4x[4][4] = {
+internal constexpr alignas(16) const uint32_t OutputBitMaskLUT4x[5][4] = {
+    {0x00000000, 0x00000000, 0x00000000, 0x00000000},
     {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000},
     {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000},
     {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000},
     {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF}
 };
 
-internal constexpr alignas(16) const uint32_t OutputBitMaskLUT8x[8][8] = {
+internal constexpr alignas(16) const uint32_t OutputBitMaskLUT8x[9][8] = {
+    {0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000},
     {0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000},
     {0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000},
     {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000},
@@ -278,22 +287,43 @@ internal constexpr alignas(16) const uint32_t OutputBitMaskLUT8x[8][8] = {
 };
 
 internal constexpr const uint8_t ShuffleBitMaskLUT4x[16] = {
-    0b00000000, //0000
-    0b00000000, //1000
-    0b01000000, //0100
-    0b00010000, //1100
-    0b10000000, //0010
-    0b00100000, //1010
-    0b01100000, //0110
-    0b00011000, //1110
-    0b11000000, //0001
-    0b00110000, //1001
-    0b01110000, //0101
-    0b00011100, //1101
-    0b10110000, //0011
-    0b00101100, //1011
-    0b01101100, //0111
-    0b00011011  //1111
+    0b00000000, 0b00000000, 0b01000000, 0b00010000, 0b10000000, 0b00100000, 0b01100000, 0b00011000,
+    0b11000000, 0b00110000, 0b01110000, 0b00011100, 0b10110000, 0b00101100, 0b01101100, 0b00011011
+};
+
+internal constexpr const uint32_t ShuffleBitMaskLUT8x[256] = {
+    0b000000000000000000000000, 0b000000000000000000000000, 0b001000000000000000000000, 0b000001000000000000000000, 0b010000000000000000000000, 0b000010000000000000000000, 0b001010000000000000000000, 0b000001010000000000000000,
+    0b011000000000000000000000, 0b000011000000000000000000, 0b001011000000000000000000, 0b000001011000000000000000, 0b010011000000000000000000, 0b000010011000000000000000, 0b001010011000000000000000, 0b000001010011000000000000,
+    0b100000000000000000000000, 0b000100000000000000000000, 0b001100000000000000000000, 0b000001100000000000000000, 0b010100000000000000000000, 0b000010100000000000000000, 0b001010100000000000000000, 0b000001010100000000000000,
+    0b011100000000000000000000, 0b000011100000000000000000, 0b001011100000000000000000, 0b000001011100000000000000, 0b010011100000000000000000, 0b000010011100000000000000, 0b001010011100000000000000, 0b000001010011100000000000,
+    0b101000000000000000000000, 0b000101000000000000000000, 0b001101000000000000000000, 0b000001101000000000000000, 0b010101000000000000000000, 0b000010101000000000000000, 0b001010101000000000000000, 0b000001010101000000000000,
+    0b011101000000000000000000, 0b000011101000000000000000, 0b001011101000000000000000, 0b000001011101000000000000, 0b010011101000000000000000, 0b000010011101000000000000, 0b001010011101000000000000, 0b000001010011101000000000,
+    0b100101000000000000000000, 0b000100101000000000000000, 0b001100101000000000000000, 0b000001100101000000000000, 0b010100101000000000000000, 0b000010100101000000000000, 0b001010100101000000000000, 0b000001010100101000000000,
+    0b011100101000000000000000, 0b000011100101000000000000, 0b001011100101000000000000, 0b000001011100101000000000, 0b010011100101000000000000, 0b000010011100101000000000, 0b001010011100101000000000, 0b000001010011100101000000,
+    0b110000000000000000000000, 0b000110000000000000000000, 0b001110000000000000000000, 0b000001110000000000000000, 0b010110000000000000000000, 0b000010110000000000000000, 0b001010110000000000000000, 0b000001010110000000000000,
+    0b011110000000000000000000, 0b000011110000000000000000, 0b001011110000000000000000, 0b000001011110000000000000, 0b010011110000000000000000, 0b000010011110000000000000, 0b001010011110000000000000, 0b000001010011110000000000,
+    0b100110000000000000000000, 0b000100110000000000000000, 0b001100110000000000000000, 0b000001100110000000000000, 0b010100110000000000000000, 0b000010100110000000000000, 0b001010100110000000000000, 0b000001010100110000000000,
+    0b011100110000000000000000, 0b000011100110000000000000, 0b001011100110000000000000, 0b000001011100110000000000, 0b010011100110000000000000, 0b000010011100110000000000, 0b001010011100110000000000, 0b000001010011100110000000,
+    0b101110000000000000000000, 0b000101110000000000000000, 0b001101110000000000000000, 0b000001101110000000000000, 0b010101110000000000000000, 0b000010101110000000000000, 0b001010101110000000000000, 0b000001010101110000000000,
+    0b011101110000000000000000, 0b000011101110000000000000, 0b001011101110000000000000, 0b000001011101110000000000, 0b010011101110000000000000, 0b000010011101110000000000, 0b001010011101110000000000, 0b000001010011101110000000,
+    0b100101110000000000000000, 0b000100101110000000000000, 0b001100101110000000000000, 0b000001100101110000000000, 0b010100101110000000000000, 0b000010100101110000000000, 0b001010100101110000000000, 0b000001010100101110000000,
+    0b011100101110000000000000, 0b000011100101110000000000, 0b001011100101110000000000, 0b000001011100101110000000, 0b010011100101110000000000, 0b000010011100101110000000, 0b001010011100101110000000, 0b000001010011100101110000,
+    0b111000000000000000000000, 0b000111000000000000000000, 0b001111000000000000000000, 0b000001111000000000000000, 0b010111000000000000000000, 0b000010111000000000000000, 0b001010111000000000000000, 0b000001010111000000000000,
+    0b011111000000000000000000, 0b000011111000000000000000, 0b001011111000000000000000, 0b000001011111000000000000, 0b010011111000000000000000, 0b000010011111000000000000, 0b001010011111000000000000, 0b000001010011111000000000,
+    0b100111000000000000000000, 0b000100111000000000000000, 0b001100111000000000000000, 0b000001100111000000000000, 0b010100111000000000000000, 0b000010100111000000000000, 0b001010100111000000000000, 0b000001010100111000000000,
+    0b011100111000000000000000, 0b000011100111000000000000, 0b001011100111000000000000, 0b000001011100111000000000, 0b010011100111000000000000, 0b000010011100111000000000, 0b001010011100111000000000, 0b000001010011100111000000,
+    0b101111000000000000000000, 0b000101111000000000000000, 0b001101111000000000000000, 0b000001101111000000000000, 0b010101111000000000000000, 0b000010101111000000000000, 0b001010101111000000000000, 0b000001010101111000000000,
+    0b011101111000000000000000, 0b000011101111000000000000, 0b001011101111000000000000, 0b000001011101111000000000, 0b010011101111000000000000, 0b000010011101111000000000, 0b001010011101111000000000, 0b000001010011101111000000,
+    0b100101111000000000000000, 0b000100101111000000000000, 0b001100101111000000000000, 0b000001100101111000000000, 0b010100101111000000000000, 0b000010100101111000000000, 0b001010100101111000000000, 0b000001010100101111000000,
+    0b011100101111000000000000, 0b000011100101111000000000, 0b001011100101111000000000, 0b000001011100101111000000, 0b010011100101111000000000, 0b000010011100101111000000, 0b001010011100101111000000, 0b000001010011100101111000,
+    0b110111000000000000000000, 0b000110111000000000000000, 0b001110111000000000000000, 0b000001110111000000000000, 0b010110111000000000000000, 0b000010110111000000000000, 0b001010110111000000000000, 0b000001010110111000000000,
+    0b011110111000000000000000, 0b000011110111000000000000, 0b001011110111000000000000, 0b000001011110111000000000, 0b010011110111000000000000, 0b000010011110111000000000, 0b001010011110111000000000, 0b000001010011110111000000,
+    0b100110111000000000000000, 0b000100110111000000000000, 0b001100110111000000000000, 0b000001100110111000000000, 0b010100110111000000000000, 0b000010100110111000000000, 0b001010100110111000000000, 0b000001010100110111000000, 
+    0b011100110111000000000000, 0b000011100110111000000000, 0b001011100110111000000000, 0b000001011100110111000000, 0b010011100110111000000000, 0b000010011100110111000000, 0b001010011100110111000000, 0b000001010011100110111000,
+    0b101110111000000000000000, 0b000101110111000000000000, 0b001101110111000000000000, 0b000001101110111000000000, 0b010101110111000000000000, 0b000010101110111000000000, 0b001010101110111000000000, 0b000001010101110111000000,
+    0b011101110111000000000000, 0b000011101110111000000000, 0b001011101110111000000000, 0b000001011101110111000000, 0b010011101110111000000000, 0b000010011101110111000000, 0b001010011101110111000000, 0b000001010011101110111000,
+    0b100101110111000000000000, 0b000100101110111000000000, 0b001100101110111000000000, 0b000001100101110111000000, 0b010100101110111000000000, 0b000010100101110111000000, 0b001010100101110111000000, 0b000001010100101110111000,
+    0b011100101110111000000000, 0b000011100101110111000000, 0b001011100101110111000000, 0b000001011100101110111000, 0b010011100101110111000000, 0b000010011100101110111000, 0b001010011100101110111000, 0b000001010011100101110111
 };
 
 enum vertex_id_t : uint32_t
@@ -1317,10 +1347,6 @@ internal void _k15_generate_barycentric_vertices(pixel_shader_input_t* pOutVerte
         const __m128 vWide = _mm_load1_ps(barycentricCoordinates.pV + baryIndex);
         const __m128 wWide = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_add_ps(uWide, vWide));
 
-        MemoryPrefetch0(barycentricCoordinates.pU + baryIndex + 4u);
-        MemoryPrefetch0(barycentricCoordinates.pV + baryIndex + 4u);
-
-        //globalAttributeIndex = (sizeof(vertex_t) / sizeof(float)) * baryIndex;
         const uint32_t scalarAttributeCount = attributeCount & 0x3;
         const uint32_t simdAttributeCount = attributeCount - scalarAttributeCount; 
         for( uint32_t attributeIndex = 0u; attributeIndex < simdAttributeCount; attributeIndex += 4u )
@@ -1483,7 +1509,7 @@ internal void _k15_draw_triangles_4_step(draw_call_triangles_t* pDrawCallTriangl
                     for( uint32_t tileX = x; tileX < tileXEnd; tileX += 4u)
                     {
                         const uint32_t depthBufferOffset = tileX + tileY * depthBufferStride;
-                        MemoryPrefetch0(pDepthBufferContent + depthBufferOffset);
+                        const __m128 oldDepthBufferZ = _mm_load_ps(pDepthBufferContent + depthBufferOffset);
 
                         const __m128i pixelCoordinatesX = _mm_add_epi32(_mm_set1_epi32(tileX), _mm_set_epi32(3, 2, 1, 0));
                         const __m128i pixelCoordinatesY = _mm_set1_epi32(tileY);
@@ -1505,25 +1531,15 @@ internal void _k15_draw_triangles_4_step(draw_call_triangles_t* pDrawCallTriangl
                         const __m128i w2Mask    = _mm_castps_si128(_mm_cmpgt_ps(w2Wide,  _mm_setzero_ps()));
 
                         const __m128i pixelMask = _mm_and_si128(_mm_and_si128(w0Mask, w1Mask), w2Mask);
-                        if(_mm_test_all_zeros(_mm_set1_epi32(0xFFFFFFFF), pixelMask) == 1)
-                        {
-                            continue;
-                        }
 
                         const __m128 uWide = _mm_mul_ps(w0Wide, oneOverTriangleAreaWide);
                         const __m128 vWide = _mm_mul_ps(w1Wide, oneOverTriangleAreaWide);
                         const __m128 wWide = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_add_ps(uWide, vWide));
 
                         const __m128 newDepthBufferZ = _mm_sub_ps(_mm_set1_ps(1.0f), _mm_fmadd_ps(v0WideZ, uWide, _mm_fmadd_ps(v1WideZ, vWide, _mm_mul_ps(v2WideZ, wWide))));
-                        const __m128 oldDepthBufferZ = _mm_load_ps(pDepthBufferContent + depthBufferOffset);
 
                         __m128i depthBufferMask = _mm_castps_si128(_mm_cmpgt_ps(newDepthBufferZ, oldDepthBufferZ));
                         depthBufferMask = _mm_and_si128(depthBufferMask, pixelMask);
-
-                        if(_mm_test_all_zeros(_mm_set1_epi32(0xFFFFFFFF), depthBufferMask) == 1)
-                        {
-                            continue;
-                        }
 
                         if( DEPTH_WRITE_ENABLED )
                         {
@@ -1541,9 +1557,9 @@ internal void _k15_draw_triangles_4_step(draw_call_triangles_t* pDrawCallTriangl
                         const int outputBitMaskPopCnt = __popcnt(outputBitMask);
                         RuntimeAssert(outputBitMaskPopCnt > 0);
 
-                        const int outputMaskLUTIndex = outputBitMaskPopCnt - 1;
+                        const int outputMaskLUTIndex = outputBitMaskPopCnt;
                         const int shuffleBitMaskLUTIndex = outputBitMask;
-                        RuntimeAssert(outputMaskLUTIndex < 4);
+                        RuntimeAssert(outputMaskLUTIndex < 5);
                         RuntimeAssert(shuffleBitMaskLUTIndex < 16);
                         
                         const __m128i outputMask = _mm_load_si128((const __m128i*)(OutputBitMaskLUT4x[outputMaskLUTIndex]));
@@ -1551,27 +1567,6 @@ internal void _k15_draw_triangles_4_step(draw_call_triangles_t* pDrawCallTriangl
 
                         const __m128i blendMaskShift = _mm_set_epi32( 0, 2, 4, 6);
                         const __m128i blendMaskWide = _mm_and_si128(_mm_srav_epi32(_mm_set1_epi32(blendMask), blendMaskShift), _mm_set1_epi32(0b11));
-
-                        __m128i blendMaskWideNew = _mm_setzero_si128();
-                        __m128i blendMaskCmp = _mm_set1_epi32(1<<3);
-                        __m128i blendMaskInsert = _mm_set1_epi32(3);
-
-                        int insertIndex = 0;
-                        for( uint32_t i = 0; i < 4; ++i )
-                        {
-                            const __m128i cmp = _mm_cmpeq_epi32(pixelBits, blendMaskCmp);
-                            if(_mm_test_all_zeros(_mm_set1_epi32(0xFFFFFFFF), cmp))
-                            {
-                                continue;
-                            }
-
-                            blendMaskInsert = _mm_add_epi32(_mm_set1_epi32(1), blendMaskInsert);
-                        }
-
-                        if( memcmp(&blendMaskWideNew, &blendMaskWide, sizeof(blendMaskWide)) != 0 )
-                        {
-                            BreakpointHook();
-                        }
 
                         const __m128 uWideShuffled = _mm_permutevar_ps(uWide, blendMaskWide);
                         const __m128 vWideShuffled = _mm_permutevar_ps(vWide, blendMaskWide);
@@ -1607,15 +1602,15 @@ internal void _k15_draw_triangles_4_step(draw_call_triangles_t* pDrawCallTriangl
 template<bool DEPTH_WRITE_ENABLED = true>
 internal void _k15_draw_triangles_8_step(draw_call_triangles_t* pDrawCallTriangles, pixel_shader_input_t pixelShaderInput, pixel_shader_output_t pixelShaderOutput, barycentric_coordinates_buffer_t barycentricCoordinates, void* pColorBuffer, void* pDepthBuffer, uint32_t colorBufferStride, uint32_t depthBufferStride, uint8_t redShift, uint8_t greenShift, uint8_t blueShift)
 {
-    const void* pUniformData = pDrawCallTriangles->pUniformData;
+    const void* restrict_modifier pUniformData = pDrawCallTriangles->pUniformData;
     pixel_shader_fnc_t pixelShader = pDrawCallTriangles->pixelShader;
 
-    uint32_t* pColorBufferContent = (uint32_t*)pColorBuffer;
-    float* pDepthBufferContent = (float*)pDepthBuffer;
+    uint32_t* restrict_modifier pColorBufferContent = (uint32_t* restrict_modifier)pColorBuffer;
+    float* restrict_modifier pDepthBufferContent = (float* restrict_modifier)pDepthBuffer;
 
     for(uint32_t triangleIndex = 0; triangleIndex < pDrawCallTriangles->screenspaceTriangleCount; ++triangleIndex)
     {
-        const screenspace_triangle_t* pTriangle = pDrawCallTriangles->pScreenspaceTriangles + triangleIndex;
+        const screenspace_triangle_t* restrict_modifier pTriangle = pDrawCallTriangles->pScreenspaceTriangles + triangleIndex;
 
         const vector2f_t v0 = k15_create_vector2f(pTriangle->screenspaceVertexPositions[0].x, pTriangle->screenspaceVertexPositions[0].y);
         const vector2f_t v1 = k15_create_vector2f(pTriangle->screenspaceVertexPositions[1].x, pTriangle->screenspaceVertexPositions[1].y);
@@ -1660,21 +1655,18 @@ internal void _k15_draw_triangles_8_step(draw_call_triangles_t* pDrawCallTriangl
                     for( uint32_t tileX = x; tileX < tileXEnd; tileX += 8u)
                     {
                         const uint32_t depthBufferOffset = tileX + tileY * depthBufferStride;
-                        MemoryPrefetch0(pDepthBufferContent + depthBufferOffset);
+                        MemoryPrefetchNTA(pDepthBufferContent + depthBufferOffset);
 
-                        const __m256i pixelCoordinatesX = _mm256_add_epi32(_mm256_set1_epi32(tileX), _mm256_set_epi32( 7, 6, 5, 4, 3, 2, 1, 0));
-                        const __m256i pixelCoordinatesY = _mm256_set1_epi32(tileY);
+                        const __m256 pixelCoordinatesX = _mm256_add_ps(_mm256_set1_ps((float)tileX), _mm256_set_ps( 7.0f, 6.0f, 5.0f, 4.0f, 3.0f, 2.0f, 1.0f, 0.0f));
+                        const __m256 pixelCoordinatesY = _mm256_set1_ps((float)tileY);
 
-                        const __m256 tileXWide = _mm256_cvtepi32_ps(pixelCoordinatesX);
-                        const __m256 tileYWide = _mm256_cvtepi32_ps(pixelCoordinatesY);
-
-                        const __m256 edge0Term1 = _mm256_sub_ps(tileYWide, v1WideY);
-                        const __m256 edge0Term3 = _mm256_sub_ps(tileXWide, v1WideX);
+                        const __m256 edge0Term1 = _mm256_sub_ps(pixelCoordinatesY, v1WideY);
+                        const __m256 edge0Term3 = _mm256_sub_ps(pixelCoordinatesX, v1WideX);
                         const __m256 w0Wide     = _mm256_fmsub_ps(edge0Term0, edge0Term1, _mm256_mul_ps(edge0Term2, edge0Term3));
                         const __m256i w0Mask    = _mm256_castps_si256(_mm256_cmp_ps(w0Wide, _mm256_setzero_ps(), _CMP_GT_OQ));
 
-                        const __m256 edge1Term1 = _mm256_sub_ps(tileYWide, v2WideY);
-                        const __m256 edge1Term3 = _mm256_sub_ps(tileXWide, v2WideX);
+                        const __m256 edge1Term1 = _mm256_sub_ps(pixelCoordinatesY, v2WideY);
+                        const __m256 edge1Term3 = _mm256_sub_ps(pixelCoordinatesX, v2WideX);
                         const __m256 w1Wide     = _mm256_fmsub_ps(edge1Term0, edge1Term1, _mm256_mul_ps(edge1Term2, edge1Term3));
                         const __m256i w1Mask    = _mm256_castps_si256(_mm256_cmp_ps(w1Wide,  _mm256_setzero_ps(), _CMP_GT_OQ));
 
@@ -1682,10 +1674,6 @@ internal void _k15_draw_triangles_8_step(draw_call_triangles_t* pDrawCallTriangl
                         const __m256i w2Mask    = _mm256_castps_si256(_mm256_cmp_ps(w2Wide,  _mm256_setzero_ps(), _CMP_GT_OQ));
 
                         const __m256i pixelMask = _mm256_and_si256(_mm256_and_si256(w0Mask, w1Mask), w2Mask);
-                        if(_mm256_test_all_zeros(_mm256_set1_epi32(0xFFFFFFFF), pixelMask) == 1)
-                        {
-                            continue;
-                        }
 
                         const __m256 uWide = _mm256_mul_ps(w0Wide, oneOverTriangleAreaWide);
                         const __m256 vWide = _mm256_mul_ps(w1Wide, oneOverTriangleAreaWide);
@@ -1697,11 +1685,6 @@ internal void _k15_draw_triangles_8_step(draw_call_triangles_t* pDrawCallTriangl
                         __m256i depthBufferMask = _mm256_castps_si256(_mm256_cmp_ps(newDepthBufferZ, oldDepthBufferZ, _CMP_GT_OQ));
                         depthBufferMask = _mm256_and_si256(depthBufferMask, pixelMask);
 
-                        if(_mm256_test_all_zeros(_mm256_set1_epi32(0xFFFFFFFF), depthBufferMask) == 1)
-                        {
-                            continue;
-                        }
-
                         if( DEPTH_WRITE_ENABLED )
                         {
                             _mm256_maskstore_ps(pDepthBufferContent + depthBufferOffset, depthBufferMask, newDepthBufferZ);
@@ -1711,32 +1694,33 @@ internal void _k15_draw_triangles_8_step(draw_call_triangles_t* pDrawCallTriangl
                         __m256i pixelBits = _mm256_srlv_epi32(depthBufferMask, _mm256_set1_epi32(31));
                         pixelBits = _mm256_sllv_epi32(pixelBits, _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0));
 
-                        pixelBits = _mm256_hadd_epi32(pixelBits, _mm256_setzero_epi256());
-                        pixelBits = _mm256_hadd_epi32(pixelBits, _mm256_setzero_epi256());
-                        const int outputBitMask = _mm256_extract_epi32(pixelBits, 0) + _mm256_exstract_epi32(pixelBits, 4);
+                        pixelBits = _mm256_hadd_epi32(pixelBits, _mm256_setzero_si256());
+                        pixelBits = _mm256_hadd_epi32(pixelBits, _mm256_setzero_si256());
+                        const int outputBitMask = _mm256_extract_epi32(pixelBits, 0) + _mm256_extract_epi32(pixelBits, 4);
                         RuntimeAssert(outputBitMask < 256);
 
                         const int outputBitMaskPopCnt = __popcnt(outputBitMask);
-                        RuntimeAssert(outputBitMaskPopCnt > 0);
-
-                        const int outputMaskLUTIndex = outputBitMaskPopCnt - 1;
+                        const int outputMaskLUTIndex = outputBitMaskPopCnt;
                         const int shuffleBitMaskLUTIndex = outputBitMask;
                         RuntimeAssert(outputMaskLUTIndex < 8);
-                        RuntimeAssert(shuffleBitMaskLUTIndex < 16);
+                        RuntimeAssert(shuffleBitMaskLUTIndex < 256);
 
                         const __m256i outputMask = _mm256_load_si256((const __m256i*)(OutputBitMaskLUT8x[outputMaskLUTIndex]));
-                        const __m256i blendMask = _mm256_load_si256((const __m256i*)(ShuffleBitMaskLUT8x[shuffleBitMaskLUTIndex]));
-                       
-                        const __m256 uWideShuffled = _mm256_permutevar_ps(uWide, blendMask);
-                        const __m256 vWideShuffled = _mm256_permutevar_ps(vWide, blendMask);
-                        const __m256i pixelCoordinatesXShuffled = _mm256_cvtps_epi32(_mm256_permutevar_ps(tileXWide, blendMask));
+                        const uint32_t blendMask = ShuffleBitMaskLUT8x[shuffleBitMaskLUTIndex];
+
+                        const __m256i blendMaskShift = _mm256_set_epi32( 0, 3, 6, 9, 12, 15, 18, 21 );
+                        const __m256i blendMaskWide = _mm256_and_si256(_mm256_srav_epi32(_mm256_set1_epi32(blendMask), blendMaskShift), _mm256_set1_epi32(0b111));
+
+                        const __m256 uWideShuffled = _mm256_permutevar8x32_ps(uWide, blendMaskWide);
+                        const __m256 vWideShuffled = _mm256_permutevar8x32_ps(vWide, blendMaskWide);
+                        const __m256i pixelCoordinatesXShuffled = _mm256_cvtps_epi32(_mm256_permutevar8x32_ps(pixelCoordinatesX, blendMaskWide));
 
                         _mm256_maskstore_epi32((int*)(pixelShaderInput.pScreenspaceX + pixelIndex), outputMask, pixelCoordinatesXShuffled);
-                        _mm256_maskstore_epi32((int*)(pixelShaderInput.pScreenspaceY + pixelIndex), outputMask, pixelCoordinatesY);
+                        _mm256_maskstore_epi32((int*)(pixelShaderInput.pScreenspaceY + pixelIndex), outputMask, _mm256_cvtps_epi32(pixelCoordinatesY));
                         _mm256_maskstore_ps((barycentricCoordinates.pU + pixelIndex), outputMask, uWideShuffled);
                         _mm256_maskstore_ps((barycentricCoordinates.pV + pixelIndex), outputMask, vWideShuffled);
 
-                        const uint32_t pixelAddedThisIteration = __popcnt(outputMaskLUTIndex);
+                        const uint32_t pixelAddedThisIteration = outputBitMaskPopCnt;
                         pixelIndex += pixelAddedThisIteration;
                     }
                 }
@@ -2667,7 +2651,11 @@ void k15_draw_frame(software_rasterizer_context_t* pContext)
             continue;
         }
 
+#if 0
         _k15_draw_triangles_4_step(&drawCallTriangles, pContext->bufferedPixelShaderInput, pContext->bufferedPixelShaderOutput, pContext->barycentricCoordinatesBuffer, pContext->pColorBuffer[pContext->currentColorBufferIndex], pContext->pDepthBuffer[pContext->currentColorBufferIndex], pContext->colorBufferStride, pContext->depthBufferStride, pContext->redShift, pContext->greenShift, pContext->blueShift);
+#else
+        _k15_draw_triangles_8_step(&drawCallTriangles, pContext->bufferedPixelShaderInput, pContext->bufferedPixelShaderOutput, pContext->barycentricCoordinatesBuffer, pContext->pColorBuffer[pContext->currentColorBufferIndex], pContext->pDepthBuffer[pContext->currentColorBufferIndex], pContext->colorBufferStride, pContext->depthBufferStride, pContext->redShift, pContext->greenShift, pContext->blueShift);
+#endif
 
         pContext->triangles.count = 0;
         pContext->visibleTriangles.count = 0;

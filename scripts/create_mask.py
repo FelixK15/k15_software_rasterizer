@@ -1,5 +1,6 @@
 
 def create8xShuffleBitMaskLUT():
+    elementsPrinted = 0
     for i in range(256):
         output = 0
         outputShift = 21
@@ -9,9 +10,16 @@ def create8xShuffleBitMaskLUT():
                 output |= j << outputShift
                 outputShift -= 3
         
-        print('0b{:024b}'.format(output))
+        if elementsPrinted == 8:
+            print("")
+            elementsPrinted = 0
+
+        print('0b{:024b}'.format(output), end=", ")
+        elementsPrinted = elementsPrinted + 1
+    print("")
 
 def create4xShuffleBitMaskLUT():
+    elementsPrinted = 0
     for i in range(16):
         output = 0
         outputShift = 6
@@ -21,7 +29,14 @@ def create4xShuffleBitMaskLUT():
                 output |= j << outputShift
                 outputShift -= 2
         
-        print('0b{:08b}'.format(output))
+        if elementsPrinted == 8:
+            print("")
+            elementsPrinted = 0
+            
+        print('0b{:08b}'.format(output), end=", ")
+        elementsPrinted = elementsPrinted + 1
+    print("")
+    
 
 print("4x shuffle mask:")
 create4xShuffleBitMaskLUT()
