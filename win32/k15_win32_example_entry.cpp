@@ -59,6 +59,7 @@ int screenHeight = virtualScreenHeight*screenScaleFactor;
 
 bool appHasFocus = true;
 bool drawDepthBuffer = false;
+bool drawWireframe = false;
 
 vector4f_t cameraPos = {0.0f, 0.0f, 2.5f, 1.0f};
 vector4f_t cameraVelocity = {};
@@ -766,6 +767,11 @@ void K15_KeyInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 	{
 		drawDepthBuffer = !drawDepthBuffer;
 	}
+
+	if(wparam == VK_F4 && firstKeyDown)
+	{
+		drawWireframe = !drawWireframe;
+	}
 }
 
 void K15_MouseButtonInput(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -1018,11 +1024,21 @@ void pixelShader(const pixel_shader_input_t* pPixelShaderInput, pixel_shader_out
 #endif
 }
 
+bool setupThreadPool()
+{
+	return true;
+}
+
 loaded_model_t loadedModel = {};
 bool setup()
 {
 	pDepthBufferPixels = (float*)_mm_malloc(virtualScreenWidth * virtualScreenHeight * sizeof(float), 16);
 	memset(pDepthBufferPixels, 0, virtualScreenWidth * virtualScreenHeight * sizeof(float));
+
+	if(!setupThreadPool())
+	{
+		return false;
+	}
 
 	software_rasterizer_context_init_parameters_t parameters = k15_create_default_software_rasterizer_context_parameters(virtualScreenWidth, virtualScreenHeight, (void**)&pBackBufferPixels, (void**)&pDepthBufferPixels, 1u);
 	parameters.redShift 	= 16;
@@ -1053,26 +1069,13 @@ bool setup()
 	shaderData.ambientColor = k15_create_vector4f(1.0f, 1.0f, 1.0f, 1.0f);
 	//shaderData.ambientColor = k15_create_vector4f(0.1f, 0.1f, 0.1f, 1.0f);
 
-	//return loadTriangle(pContext, &loadedModel);
-	return loadObjModel(pContext, &loadedModel, "crashbandicoot.obj", "crashbandicoot.mtl", 0.005f);
+	return loadTriangle(pContext, &loadedModel);
+	//return loadObjModel(pContext, &loadedModel, "crashbandicoot.obj", "crashbandicoot.mtl", 0.005f);
 	//return loadScnModel(pContext, &loadedModel, "helmet.scn", 0.5f);
 }
 
 void drawBackBuffer(HDC deviceContext)
 {
-	if( drawDepthBuffer )
-	{
-		//Copy Depth buffer to "StretchDIBits-friendly" format
-		for(int32_t y = 0; y < virtualScreenHeight; ++y)
-		{
-			for(int32_t x = 0; x < virtualScreenWidth; ++x)
-			{
-				const uint8_t depthBufferValue = float_to_uint8(clamp(pDepthBufferPixels[x + y * virtualScreenWidth], 0.0f, 1.0f) * 255.f);
-				pBackBufferPixels[x + y * virtualScreenWidth] = depthBufferValue << 16 | depthBufferValue << 8 | depthBufferValue << 0;
-			}
-		}
-	}
-
 	StretchDIBits(deviceContext, 0, 0, screenWidth, screenHeight, 0, 0, virtualScreenWidth, virtualScreenHeight, 
 		pBackBufferPixels, pBackBufferBitmapInfo, DIB_RGB_COLORS, SRCCOPY);  
 }
@@ -1180,6 +1183,9 @@ void doFrame(float deltaTimeInMs)
 	k15_bind_vertex_shader(pContext, vertexShaderHandle);
 	k15_bind_pixel_shader(pContext, pixelShaderHandle);
 	k15_bind_uniform_buffer(pContext, uniformBufferHandle);
+
+	pContext->settings.drawWireframe 	= drawWireframe;
+	pContext->settings.drawDepthBuffer 	= drawDepthBuffer;
 
 #if 1
 	for( uint32_t subModelIndex = 0; subModelIndex < loadedModel.subModelCount; ++subModelIndex )
