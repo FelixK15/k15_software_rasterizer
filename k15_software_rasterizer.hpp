@@ -1574,6 +1574,10 @@ internal void _k15_draw_triangles_4_step(draw_call_triangles_t* pDrawCallTriangl
                         const __m128i w2Mask    = _mm_castps_si128(_mm_cmpgt_ps(w2Wide,  _mm_setzero_ps()));
 
                         const __m128i pixelMask = _mm_and_si128(_mm_and_si128(w0Mask, w1Mask), w2Mask);
+                        if(_mm_movemask_epi8(pixelMask) == 0)
+                        {
+                            continue;
+                        }
 
                         const __m128 uWide = _mm_mul_ps(w0Wide, oneOverTriangleAreaWide);
                         const __m128 vWide = _mm_mul_ps(w1Wide, oneOverTriangleAreaWide);
@@ -1583,6 +1587,11 @@ internal void _k15_draw_triangles_4_step(draw_call_triangles_t* pDrawCallTriangl
 
                         __m128i depthBufferMask = _mm_castps_si128(_mm_cmpgt_ps(newDepthBufferZ, oldDepthBufferZ));
                         depthBufferMask = _mm_and_si128(depthBufferMask, pixelMask);
+
+                        if(_mm_movemask_epi8(depthBufferMask) == 0)
+                        {
+                            continue;
+                        }
 
                         if( DEPTH_WRITE_ENABLED )
                         {
@@ -1831,9 +1840,6 @@ internal void _k15_draw_triangles_8_step(draw_call_triangles_t* pDrawCallTriangl
 
                         const __m256 uWide = _mm256_mul_ps(w0Wide, oneOverTriangleAreaWide);
                         const __m256 vWide = _mm256_mul_ps(w1Wide, oneOverTriangleAreaWide);
-
-                        
-
                         const __m256 wWide = _mm256_sub_ps(_mm256_set1_ps(1.0f), _mm256_add_ps(uWide, vWide));
 
                         const __m256 newDepthBufferZ = _mm256_sub_ps(_mm256_set1_ps(1.0f), _mm256_fmadd_ps(v0WideZ, uWide, _mm256_fmadd_ps(v1WideZ, vWide, _mm256_mul_ps(v2WideZ, wWide))));
