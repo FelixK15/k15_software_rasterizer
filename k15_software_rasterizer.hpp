@@ -1083,67 +1083,121 @@ internal inline constexpr vector2f_t k15_create_vector2f(float x, float y)
     return {x, y};
 }
 
-internal inline void _k15_repeat_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
+internal inline void _k15_repeat_texcoords(const vertex_t* pVertices, vector2f_t* pTexcoords, uint32_t texcoordCount)
 {
-    for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex )
+#ifndef K15_RELEASE_BUILD
+    for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex)
     {
-        RuntimeAssert(pTexcoords[texCoordIndex].x < 2.0f);
-        RuntimeAssert(pTexcoords[texCoordIndex].y < 2.0f);
+        RuntimeAssert(pVertices[texCoordIndex].texcoord.x < 2.0f);
+        RuntimeAssert(pVertices[texCoordIndex].texcoord.y < 2.0f);
+    }
+#endif
+
+    const uint32_t texcoordCountRest = texcoordCount & 0x3;
+    const uint32_t texcoordCountSIMD = texcoordCount - texcoordCountRest;
+
+    const uint32_t texcoordOffsetInFloats = offsetof(vertex_t, vertex_t::texcoord) / sizeof(float);
+    const uint32_t vertexSizeInFloats = sizeof(vertex_t) / sizeof(float);
+    for( uint32_t texcoordIndex = 0u; texcoordIndex < texcoordCountSIMD; texcoordIndex += 4u )
+    {
+        __m256i texcoordsIndices = _mm256_add_epi32(_mm256_set1_epi32(texcoordIndex), _mm256_set_epi32(3, 3, 2, 2, 1, 1, 0, 0));
+        texcoordsIndices = _mm256_mullo_epi32(texcoordsIndices, _mm256_set1_epi32(vertexSizeInFloats));
+        texcoordsIndices = _mm256_add_epi32(texcoordsIndices, _mm256_set_epi32(texcoordOffsetInFloats+1, texcoordOffsetInFloats, texcoordOffsetInFloats+1, texcoordOffsetInFloats, texcoordOffsetInFloats+1, texcoordOffsetInFloats ,texcoordOffsetInFloats+1, texcoordOffsetInFloats));
+        __m256 vertexTexcoords = _mm256_i32gather_ps((const float*)pVertices, texcoordsIndices, 4);
         
-        if( pTexcoords[texCoordIndex].x > 1.0f )
-        {
-            pTexcoords[texCoordIndex].x = (pTexcoords[texCoordIndex].x - 1.0f);
-        }
-
-        if( pTexcoords[texCoordIndex].y > 1.0f )
-        {
-            pTexcoords[texCoordIndex].y = (pTexcoords[texCoordIndex].y - 1.0f);
-        }
+        __m256 mask = _mm256_cmp_ps(vertexTexcoords, _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+        vertexTexcoords = _mm256_sub_ps(vertexTexcoords, _mm256_and_ps(_mm256_set1_ps(1.0f), mask));
+        _mm256_store_ps((float*)(pTexcoords + texcoordIndex), vertexTexcoords);
     }
-}
 
-internal inline void _k15_clamp_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
-{
-    for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex )
+    for( uint32_t texCoordIndex = texcoordCountSIMD; texCoordIndex < texcoordCount; ++texCoordIndex)
     {
-        pTexcoords[texCoordIndex].x = clamp01f(pTexcoords[texCoordIndex].x);
-        pTexcoords[texCoordIndex].y = clamp01f(pTexcoords[texCoordIndex].y);
-    }
-}
-
-internal inline void _k15_mirror_texcoords(vector2f_t* pTexcoords, uint32_t texcoordCount)
-{
-    for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex )
-    {
-        RuntimeAssert(pTexcoords[texCoordIndex].x < 2.0f);
-        RuntimeAssert(pTexcoords[texCoordIndex].y < 2.0f);
-
-        if( pTexcoords[texCoordIndex].x > 1.0f )
+        if( pVertices[texCoordIndex].texcoord.x > 1.0f )
         {
-            pTexcoords[texCoordIndex].x = 1.0f - (pTexcoords[texCoordIndex].x - 1.0f);
+            pTexcoords[texCoordIndex].x = (pVertices[texCoordIndex].texcoord.x - 1.0f);
         }
 
-        if( pTexcoords[texCoordIndex].y > 1.0f )
+        if( pVertices[texCoordIndex].texcoord.y > 1.0f )
         {
-            pTexcoords[texCoordIndex].y = 1.0f - (pTexcoords[texCoordIndex].y - 1.0f);
+            pTexcoords[texCoordIndex].y = (pVertices[texCoordIndex].texcoord.y - 1.0f);
         }
     }
 }
 
-void _k15_fill_texcoords_from_vertex_data(const vertex_t* pVertices, vector2f_t* pOutTexCoords, uint32_t vertexCount)
+internal inline void _k15_clamp_texcoords(const vertex_t* pVertices, vector2f_t* pTexcoords, uint32_t texcoordCount)
 {
-    for(uint32_t vertexIndex = 0u; vertexIndex < vertexCount; ++vertexIndex)
+    const uint32_t texcoordCountRest = texcoordCount & 0x3;
+    const uint32_t texcoordCountSIMD = texcoordCount - texcoordCountRest;
+
+    const uint32_t texcoordOffsetInFloats = offsetof(vertex_t, vertex_t::texcoord) / sizeof(float);
+    const uint32_t vertexSizeInFloats = sizeof(vertex_t) / sizeof(float);
+
+    for( uint32_t texcoordIndex = 0u; texcoordIndex < texcoordCountSIMD; texcoordIndex += 4u )
     {
-       pOutTexCoords[vertexIndex] = pVertices[vertexIndex].texcoord;
+        __m256i texcoordsIndices = _mm256_add_epi32(_mm256_set1_epi32(texcoordIndex), _mm256_set_epi32(3, 3, 2, 2, 1, 1, 0, 0));
+        texcoordsIndices = _mm256_mullo_epi32(texcoordsIndices, _mm256_set1_epi32(vertexSizeInFloats));
+        texcoordsIndices = _mm256_add_epi32(texcoordsIndices, _mm256_set_epi32(texcoordOffsetInFloats+1, texcoordOffsetInFloats, texcoordOffsetInFloats+1, texcoordOffsetInFloats, texcoordOffsetInFloats+1, texcoordOffsetInFloats ,texcoordOffsetInFloats+1, texcoordOffsetInFloats));
+        __m256 vertexTexcoords = _mm256_i32gather_ps((const float*)pVertices, texcoordsIndices, 4);
+        
+        __m256 minMask = _mm256_cmp_ps(vertexTexcoords, _mm256_set1_ps(0.0f), _CMP_LT_OQ);
+        __m256 maxMask = _mm256_cmp_ps(vertexTexcoords, _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+
+        vertexTexcoords = _mm256_blendv_ps(vertexTexcoords, _mm256_set1_ps(0.0f), minMask);
+        vertexTexcoords = _mm256_blendv_ps(vertexTexcoords, _mm256_set1_ps(1.0f), maxMask);
+        _mm256_store_ps((float*)(pTexcoords + texcoordIndex), vertexTexcoords);
+    }
+
+    for( uint32_t texCoordIndex = texcoordCountSIMD; texCoordIndex < texcoordCount; ++texCoordIndex)
+    {
+        pTexcoords[texCoordIndex].x = clamp01f(pVertices[texCoordIndex].texcoord.x);
+        pTexcoords[texCoordIndex].y = clamp01f(pVertices[texCoordIndex].texcoord.y);
     }
 }
 
-template<sample_addressing_mode_t ADDRESSING_MODE>
-texture_samples_t k15_sample_texture(texture_handle_t texture, const pixel_shader_input_t* pPixelShaderInput, uint32_t texcoordCount)
+internal inline void _k15_mirror_texcoords(const vertex_t* pVertices, vector2f_t* pTexcoords, uint32_t texcoordCount)
 {
-    RuntimeAssert(texcoordCount <= PixelShaderInputCount);
-    texture_t* pTextureData = (texture_t*)texture.pHandle;
+#ifndef K15_RELEASE_BUILD
+    for( uint32_t texCoordIndex = 0u; texCoordIndex < texcoordCount; ++texCoordIndex)
+    {
+        RuntimeAssert(pVertices[texCoordIndex].texcoord.x < 2.0f);
+        RuntimeAssert(pVertices[texCoordIndex].texcoord.y < 2.0f);
+    }
+#endif
 
+    const uint32_t texcoordCountRest = texcoordCount & 0x3;
+    const uint32_t texcoordCountSIMD = texcoordCount - texcoordCountRest;
+
+    const uint32_t texcoordOffsetInFloats = offsetof(vertex_t, vertex_t::texcoord) / sizeof(float);
+    const uint32_t vertexSizeInFloats = sizeof(vertex_t) / sizeof(float);
+    for( uint32_t texcoordIndex = 0u; texcoordIndex < texcoordCountSIMD; texcoordIndex += 4u )
+    {
+        __m256i texcoordsIndices = _mm256_add_epi32(_mm256_set1_epi32(texcoordIndex), _mm256_set_epi32(3, 3, 2, 2, 1, 1, 0, 0));
+        texcoordsIndices = _mm256_mullo_epi32(texcoordsIndices, _mm256_set1_epi32(vertexSizeInFloats));
+        texcoordsIndices = _mm256_add_epi32(texcoordsIndices, _mm256_set_epi32(texcoordOffsetInFloats+1, texcoordOffsetInFloats, texcoordOffsetInFloats+1, texcoordOffsetInFloats, texcoordOffsetInFloats+1, texcoordOffsetInFloats ,texcoordOffsetInFloats+1, texcoordOffsetInFloats));
+        __m256 vertexTexcoords = _mm256_i32gather_ps((const float*)pVertices, texcoordsIndices, 4);
+        
+        __m256 mask = _mm256_cmp_ps(vertexTexcoords, _mm256_set1_ps(1.0f), _CMP_GT_OQ);
+        vertexTexcoords = _mm256_sub_ps(_mm256_set1_ps(1.0f), _mm256_sub_ps(vertexTexcoords, _mm256_and_ps(_mm256_set1_ps(1.0f), mask)));
+        _mm256_store_ps((float*)(pTexcoords + texcoordIndex), vertexTexcoords);
+    }
+
+    for( uint32_t texCoordIndex = texcoordCountSIMD; texCoordIndex < texcoordCount; ++texCoordIndex)
+    {
+        if( pVertices[texCoordIndex].texcoord.x > 1.0f )
+        {
+            pTexcoords[texCoordIndex].x = 1.0f - (pVertices[texCoordIndex].texcoord.x - 1.0f);
+        }
+
+        if( pVertices[texCoordIndex].texcoord.y > 1.0f )
+        {
+            pTexcoords[texCoordIndex].y = 1.0f - (pVertices[texCoordIndex].texcoord.y - 1.0f);
+        }
+    }
+}
+
+template<int TEXTURE_COMPONENT_COUNT, sample_addressing_mode_t ADDRESSING_MODE>
+texture_samples_t _k15_sample_texture_components(const texture_t* restrict_modifier pTextureData, const pixel_shader_input_t* restrict_modifier pPixelShaderInput, uint32_t texcoordCount)
+{
     constexpr uint32_t TexcoordBatchCount = 512;
     vector2f_t texCoords[TexcoordBatchCount];
     texture_samples_t samples = {};
@@ -1153,161 +1207,148 @@ texture_samples_t k15_sample_texture(texture_handle_t texture, const pixel_shade
     for(uint32_t texcoordIndex = 0u; texcoordIndex < texcoordCount; texcoordIndex += TexcoordBatchCount)
     {
         uint32_t currentTexCoordBatchCount = get_min(texcoordCount - texcoordIndex, TexcoordBatchCount);
-        _k15_fill_texcoords_from_vertex_data(pPixelShaderInput->pVertexData + texcoordIndex, texCoords, currentTexCoordBatchCount);
 
         switch( ADDRESSING_MODE )
         {
             case sample_addressing_mode_t::repeat:
-            _k15_repeat_texcoords(texCoords, currentTexCoordBatchCount);
+            _k15_repeat_texcoords(pPixelShaderInput->pVertexData + texcoordIndex, texCoords, currentTexCoordBatchCount);
             break;
 
             case sample_addressing_mode_t::clamp:
-            _k15_clamp_texcoords(texCoords, currentTexCoordBatchCount);
+            _k15_clamp_texcoords(pPixelShaderInput->pVertexData + texcoordIndex, texCoords, currentTexCoordBatchCount);
             break;
 
             case sample_addressing_mode_t::mirror:
-            _k15_mirror_texcoords(texCoords, currentTexCoordBatchCount);
+            _k15_mirror_texcoords(pPixelShaderInput->pVertexData + texcoordIndex, texCoords, currentTexCoordBatchCount);
             break;
         }
 
         const uint32_t width = pTextureData->width - 1u;
         const uint32_t height = pTextureData->height - 1u;
         const uint32_t stride = pTextureData->stride;
-        const uint8_t componentCount = pTextureData->componentCount;
         const uint32_t currentTexcoordBatchRest = currentTexCoordBatchCount & 0x3;
         currentTexCoordBatchCount -= currentTexcoordBatchRest;
 
         const uint8_t* restrict_modifier pTextureImageData = (uint8_t*)pTextureData->pData;
         if( currentTexCoordBatchCount > 0u )
         {
-            uint32_t x[4], y[4], texelIndices[4], nextX[4], nextY[4], nextTexelIndices[4];
-
-            nextX[0] = float_to_uint32(texCoords[0].x * (float)width);
-            nextX[1] = float_to_uint32(texCoords[1].x * (float)width);
-            nextX[2] = float_to_uint32(texCoords[2].x * (float)width);
-            nextX[3] = float_to_uint32(texCoords[3].x * (float)width);
-
-            nextY[0] = height - float_to_uint32(texCoords[0].y * (float)height);
-            nextY[1] = height - float_to_uint32(texCoords[1].y * (float)height);
-            nextY[2] = height - float_to_uint32(texCoords[2].y * (float)height);
-            nextY[3] = height - float_to_uint32(texCoords[3].y * (float)height);
-
-            nextTexelIndices[0] = nextX[0] + nextY[0] * stride;
-            nextTexelIndices[1] = nextX[1] + nextY[1] * stride;
-            nextTexelIndices[2] = nextX[2] + nextY[2] * stride;
-            nextTexelIndices[3] = nextX[3] + nextY[3] * stride;
-
             for( uint32_t batchTexcoordIndex = 0u; batchTexcoordIndex < currentTexCoordBatchCount; batchTexcoordIndex += 4u)
             {
-                memcpy(x, nextX, sizeof(x));
-                memcpy(y, nextY, sizeof(y));
-                memcpy(texelIndices, nextTexelIndices, sizeof(texelIndices));
+                const uint32_t x[] = {
+                    float_to_uint32(texCoords[batchTexcoordIndex + 0].x * (float)width),
+                    float_to_uint32(texCoords[batchTexcoordIndex + 1].x * (float)width),
+                    float_to_uint32(texCoords[batchTexcoordIndex + 2].x * (float)width),
+                    float_to_uint32(texCoords[batchTexcoordIndex + 3].x * (float)width),
+                };
 
-                //FK: This will read out of bounds in the last loop iteration - but that shouldn't be a problem
-                nextX[0] = float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 0].x * (float)width);
-                nextX[1] = float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 1].x * (float)width);
-                nextX[2] = float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 2].x * (float)width);
-                nextX[3] = float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 3].x * (float)width);
+                const uint32_t y[] = {
+                    height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 0].y * (float)height),
+                    height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 1].y * (float)height),
+                    height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 2].y * (float)height),
+                    height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 3].y * (float)height)
+                };
 
-                nextY[0] = height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 0].y * (float)height);
-                nextY[1] = height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 1].y * (float)height);
-                nextY[2] = height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 2].y * (float)height);
-                nextY[3] = height - float_to_uint32_unsafe(texCoords[batchTexcoordIndex + 4 + 3].y * (float)height);
+                const uint32_t texelIndices[] = {
+                    x[0] + y[0] * stride,
+                    x[1] + y[1] * stride,
+                    x[2] + y[2] * stride,
+                    x[3] + y[3] * stride
+                };
 
-                nextTexelIndices[0] = nextX[0] + nextY[0] * stride;
-                nextTexelIndices[1] = nextX[1] + nextY[1] * stride;
-                nextTexelIndices[2] = nextX[2] + nextY[2] * stride;
-                nextTexelIndices[3] = nextX[3] + nextY[3] * stride;
-
-                MemoryPrefetch0(pTextureImageData + nextTexelIndices[0] * componentCount);
-                MemoryPrefetch0(pTextureImageData + nextTexelIndices[1] * componentCount);
-                MemoryPrefetch0(pTextureImageData + nextTexelIndices[2] * componentCount);
-                MemoryPrefetch0(pTextureImageData + nextTexelIndices[3] * componentCount);
-
-#if 1
-                switch(componentCount)
+                switch(TEXTURE_COMPONENT_COUNT)
                 {
                     case 4u:
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].w = (float)pTextureImageData[texelIndices[0] * componentCount + 3] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].w = (float)pTextureImageData[texelIndices[1] * componentCount + 3] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].w = (float)pTextureImageData[texelIndices[2] * componentCount + 3] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].w = (float)pTextureImageData[texelIndices[3] * componentCount + 3] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].w = (float)pTextureImageData[texelIndices[0] * TEXTURE_COMPONENT_COUNT + 3] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].w = (float)pTextureImageData[texelIndices[1] * TEXTURE_COMPONENT_COUNT + 3] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].w = (float)pTextureImageData[texelIndices[2] * TEXTURE_COMPONENT_COUNT + 3] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].w = (float)pTextureImageData[texelIndices[3] * TEXTURE_COMPONENT_COUNT + 3] / 255.f;
                     case 3u:
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].z = (float)pTextureImageData[texelIndices[0] * componentCount + 2] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].z = (float)pTextureImageData[texelIndices[1] * componentCount + 2] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].z = (float)pTextureImageData[texelIndices[2] * componentCount + 2] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].z = (float)pTextureImageData[texelIndices[3] * componentCount + 2] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].z = (float)pTextureImageData[texelIndices[0] * TEXTURE_COMPONENT_COUNT + 2] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].z = (float)pTextureImageData[texelIndices[1] * TEXTURE_COMPONENT_COUNT + 2] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].z = (float)pTextureImageData[texelIndices[2] * TEXTURE_COMPONENT_COUNT + 2] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].z = (float)pTextureImageData[texelIndices[3] * TEXTURE_COMPONENT_COUNT + 2] / 255.f;
                     case 2u:
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].y = (float)pTextureImageData[texelIndices[0] * componentCount + 1] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].y = (float)pTextureImageData[texelIndices[1] * componentCount + 1] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].y = (float)pTextureImageData[texelIndices[2] * componentCount + 1] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].y = (float)pTextureImageData[texelIndices[3] * componentCount + 1] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].y = (float)pTextureImageData[texelIndices[0] * TEXTURE_COMPONENT_COUNT + 1] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].y = (float)pTextureImageData[texelIndices[1] * TEXTURE_COMPONENT_COUNT + 1] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].y = (float)pTextureImageData[texelIndices[2] * TEXTURE_COMPONENT_COUNT + 1] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].y = (float)pTextureImageData[texelIndices[3] * TEXTURE_COMPONENT_COUNT + 1] / 255.f;
                     case 1u:
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].x = (float)pTextureImageData[texelIndices[0] * componentCount + 0] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].x = (float)pTextureImageData[texelIndices[1] * componentCount + 0] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].x = (float)pTextureImageData[texelIndices[2] * componentCount + 0] / 255.f;
-                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].x = (float)pTextureImageData[texelIndices[3] * componentCount + 0] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 0].x = (float)pTextureImageData[texelIndices[0] * TEXTURE_COMPONENT_COUNT + 0] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 1].x = (float)pTextureImageData[texelIndices[1] * TEXTURE_COMPONENT_COUNT + 0] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 2].x = (float)pTextureImageData[texelIndices[2] * TEXTURE_COMPONENT_COUNT + 0] / 255.f;
+                        samples.pColors[texcoordIndex + batchTexcoordIndex + 3].x = (float)pTextureImageData[texelIndices[3] * TEXTURE_COMPONENT_COUNT + 0] / 255.f;
                         break;
 
                     default:
                         RuntimeAssert(false);
                 }
-#else
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 0].w = 1.0f;
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 1].w = 1.0f;
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 2].w = 1.0f;
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 3].w = 1.0f;
-                
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 0].z = 0.0f;
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 1].z = 0.0f;
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 2].z = 0.0f;
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 3].z = 0.0f;
-
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 0].y = y[0];
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 1].y = y[1];
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 2].y = y[2];
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 3].y = y[3];
-
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 0].x = x[0];
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 1].x = x[1];
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 2].x = x[2];
-                samples.pColors[texcoordIndex + batchTexcoordIndex + 3].x = x[3];
-#endif
             }
         }
 
-        for( uint32_t singleTexcoordIndex = 0; singleTexcoordIndex < currentTexcoordBatchRest; ++singleTexcoordIndex )
+        for( uint32_t singleTexcoordIndex = 0u; singleTexcoordIndex < currentTexcoordBatchRest; ++singleTexcoordIndex )
         {
             const uint32_t globalTexcoordIndex = currentTexCoordBatchCount + texcoordIndex + singleTexcoordIndex;
-            const uint32_t x = float_to_uint32(texCoords[currentTexCoordBatchCount + singleTexcoordIndex].x * (float)width);
-            const uint32_t y = height - float_to_uint32(texCoords[currentTexCoordBatchCount + singleTexcoordIndex].y * (float)height);
+            const uint32_t x = float_to_uint32(texCoords[singleTexcoordIndex].x * (float)width);
+            const uint32_t y = height - float_to_uint32(texCoords[singleTexcoordIndex].y * (float)height);
             const uint32_t texelIndex = x + y * stride;
 
-            switch(componentCount)
+            switch(TEXTURE_COMPONENT_COUNT)
             {
                 case 4u:
-                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
-                    samples.pColors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
-                    samples.pColors[globalTexcoordIndex].z = (float)pTextureImageData[texelIndex * componentCount + 2] / 255.f;
-                    samples.pColors[globalTexcoordIndex].w = (float)pTextureImageData[texelIndex * componentCount + 3] / 255.f;
+                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * TEXTURE_COMPONENT_COUNT + 0] / 255.f;
+                    samples.pColors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * TEXTURE_COMPONENT_COUNT + 1] / 255.f;
+                    samples.pColors[globalTexcoordIndex].z = (float)pTextureImageData[texelIndex * TEXTURE_COMPONENT_COUNT + 2] / 255.f;
+                    samples.pColors[globalTexcoordIndex].w = (float)pTextureImageData[texelIndex * TEXTURE_COMPONENT_COUNT + 3] / 255.f;
                     break;
                 case 3u:
-                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
-                    samples.pColors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
-                    samples.pColors[globalTexcoordIndex].z = (float)pTextureImageData[texelIndex * componentCount + 2] / 255.f;
+                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * TEXTURE_COMPONENT_COUNT + 0] / 255.f;
+                    samples.pColors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * TEXTURE_COMPONENT_COUNT + 1] / 255.f;
+                    samples.pColors[globalTexcoordIndex].z = (float)pTextureImageData[texelIndex * TEXTURE_COMPONENT_COUNT + 2] / 255.f;
                     break;
                 case 2u:
-                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
-                    samples.pColors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * componentCount + 1] / 255.f;
+                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * TEXTURE_COMPONENT_COUNT + 0] / 255.f;
+                    samples.pColors[globalTexcoordIndex].y = (float)pTextureImageData[texelIndex * TEXTURE_COMPONENT_COUNT + 1] / 255.f;
                     break;
                 case 1u:
-                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * componentCount + 0] / 255.f;
+                    samples.pColors[globalTexcoordIndex].x = (float)pTextureImageData[texelIndex * TEXTURE_COMPONENT_COUNT + 0] / 255.f;
                     break;
 
                 default:
                     RuntimeAssert(false);
             }
         }
+    }
+
+    return samples;
+}
+
+template<sample_addressing_mode_t ADDRESSING_MODE>
+texture_samples_t k15_sample_texture(texture_handle_t texture, const pixel_shader_input_t* pPixelShaderInput, uint32_t texcoordCount)
+{
+    RuntimeAssert(texcoordCount <= PixelShaderInputCount);
+    texture_t* pTextureData = (texture_t*)texture.pHandle;
+
+    texture_samples_t samples;
+    switch(pTextureData->componentCount)
+    {
+        case 1u:
+            samples = _k15_sample_texture_components<1u, ADDRESSING_MODE>(pTextureData, pPixelShaderInput, texcoordCount);
+            break;
+
+        case 2u:
+            samples = _k15_sample_texture_components<2u, ADDRESSING_MODE>(pTextureData, pPixelShaderInput, texcoordCount);
+            break;
+
+        case 3u:
+            samples = _k15_sample_texture_components<3u, ADDRESSING_MODE>(pTextureData, pPixelShaderInput, texcoordCount);
+            break;
+
+        case 4u:
+            samples = _k15_sample_texture_components<4u, ADDRESSING_MODE>(pTextureData, pPixelShaderInput, texcoordCount);
+            break;
+
+        default:
+            RuntimeAssert(false);
     }
 
     return samples;
@@ -1747,6 +1788,8 @@ internal void _k15_draw_triangles_8_step(draw_call_triangles_t* pDrawCallTriangl
 
         for(uint32_t y = pTriangle->boundingBox.y1; y < pTriangle->boundingBox.y2; y += PixelShaderTileSize)
         {
+            MemoryPrefetchNTA(pDepthBufferContent + pTriangle->boundingBox.x1 + y * depthBufferStride);
+
             const uint32_t yDelta = (pTriangle->boundingBox.y2 - y);
             const uint32_t yStep = get_min(PixelShaderTileSize, yDelta);
             const uint32_t tileYEnd = y + yStep;
@@ -1763,7 +1806,6 @@ internal void _k15_draw_triangles_8_step(draw_call_triangles_t* pDrawCallTriangl
                     for( uint32_t tileX = x; tileX < tileXEnd; tileX += 8u)
                     {
                         const uint32_t depthBufferOffset = tileX + tileY * depthBufferStride;
-                        MemoryPrefetchNTA(pDepthBufferContent + depthBufferOffset);
 
                         const __m256 pixelCoordinatesX = _mm256_add_ps(_mm256_set1_ps((float)tileX), _mm256_set_ps( 7.0f, 6.0f, 5.0f, 4.0f, 3.0f, 2.0f, 1.0f, 0.0f));
                         const __m256 pixelCoordinatesY = _mm256_set1_ps((float)tileY);
@@ -1782,9 +1824,16 @@ internal void _k15_draw_triangles_8_step(draw_call_triangles_t* pDrawCallTriangl
                         const __m256i w2Mask    = _mm256_castps_si256(_mm256_cmp_ps(w2Wide,  _mm256_setzero_ps(), _CMP_GT_OQ));
 
                         const __m256i pixelMask = _mm256_and_si256(_mm256_and_si256(w0Mask, w1Mask), w2Mask);
+                        if( _mm256_movemask_epi8(pixelMask) == 0 )
+                        {
+                            continue;
+                        }
 
                         const __m256 uWide = _mm256_mul_ps(w0Wide, oneOverTriangleAreaWide);
                         const __m256 vWide = _mm256_mul_ps(w1Wide, oneOverTriangleAreaWide);
+
+                        
+
                         const __m256 wWide = _mm256_sub_ps(_mm256_set1_ps(1.0f), _mm256_add_ps(uWide, vWide));
 
                         const __m256 newDepthBufferZ = _mm256_sub_ps(_mm256_set1_ps(1.0f), _mm256_fmadd_ps(v0WideZ, uWide, _mm256_fmadd_ps(v1WideZ, vWide, _mm256_mul_ps(v2WideZ, wWide))));
@@ -1792,6 +1841,10 @@ internal void _k15_draw_triangles_8_step(draw_call_triangles_t* pDrawCallTriangl
 
                         __m256i depthBufferMask = _mm256_castps_si256(_mm256_cmp_ps(newDepthBufferZ, oldDepthBufferZ, _CMP_GT_OQ));
                         depthBufferMask = _mm256_and_si256(depthBufferMask, pixelMask);
+                        if( _mm256_movemask_epi8(depthBufferMask) == 0 )
+                        {
+                            continue;
+                        }
 
                         if( DEPTH_WRITE_ENABLED )
                         {
@@ -1865,10 +1918,7 @@ internal void _k15_convert_depth_buffer_to_color_buffer(const void* pDepthBuffer
         {
             const __m256 depth = _mm256_mul_ps(_mm256_load_ps(pDepthBufferContent + x + y * depthBufferStride),  _mm256_set1_ps(255.f));
             const __m256i depthInteger = _mm256_cvtps_epi32(depth);
-            if(_mm256_movemask_epi8(depthInteger) != 0 )
-            {
-                BreakpointHook();
-            }
+
             __m256i colorDepth = _mm256_or_si256(depthInteger, _mm256_sllv_epi32(depthInteger, redShiftWide));
             colorDepth = _mm256_or_si256(colorDepth, _mm256_sllv_epi32(depthInteger, greenShiftWide));
             colorDepth = _mm256_or_si256(colorDepth, _mm256_sllv_epi32(depthInteger, blueShiftWide));
@@ -2755,10 +2805,15 @@ internal bool _k15_generate_triangles(draw_call_triangles_t* pOutDrawCallTriangl
     return true;
 }
 
+void _k15_clear_buffers(unsigned long* restrict_modifier pColorBuffer, unsigned long* restrict_modifier pDepthBuffer, uint32_t bufferHeight, uint32_t colorBufferStride, uint32_t depthBufferStride)
+{
+    __stosd(pDepthBuffer, 0u, bufferHeight * depthBufferStride);
+	__stosd(pColorBuffer, 0u, bufferHeight * colorBufferStride);
+}
+
 void k15_draw_frame(software_rasterizer_context_t* pContext)
 {
-    __stosd((unsigned long*)pContext->pDepthBuffer[pContext->currentColorBufferIndex], 0u, pContext->backBufferWidth * pContext->backBufferHeight);
-	__stosd((unsigned long*)pContext->pColorBuffer[pContext->currentColorBufferIndex], 0u, pContext->backBufferWidth * pContext->backBufferHeight);
+    _k15_clear_buffers((unsigned long* restrict_modifier)pContext->pColorBuffer[pContext->currentColorBufferIndex], (unsigned long* restrict_modifier)pContext->pDepthBuffer[pContext->currentColorBufferIndex], pContext->backBufferHeight, pContext->colorBufferStride, pContext->depthBufferStride);
 
     for(uint32_t drawCallIndex = 0; drawCallIndex < pContext->drawCalls.count; ++drawCallIndex)
     {

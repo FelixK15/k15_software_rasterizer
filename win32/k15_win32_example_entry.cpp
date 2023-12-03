@@ -61,9 +61,9 @@ bool appHasFocus = true;
 bool drawDepthBuffer = false;
 bool drawWireframe = false;
 
-vector4f_t cameraPos = {0.0f, 0.0f, 2.5f, 1.0f};
+vector4f_t cameraPos = {0.442f, -0.059f, 3.057f, 1.0f};
 vector4f_t cameraVelocity = {};
-vector2f_t cameraAngles = {};
+vector2f_t cameraAngles = {0.012f, -0.033f};
 
 matrix4x4f_t projectionMatrix;
 shader_uniform_data_t shaderData;
@@ -644,9 +644,9 @@ bool loadTriangle(software_rasterizer_context_t* pContext, loaded_model_t* pOutM
 	}
 
 	pOutModel->subModelCount 	= 1u;
-	pOutModel->vertexBuffers[0] = k15_create_vertex_buffer(pContext, test_triangle_vertices, 3u);
+	pOutModel->vertexBuffers[0] = k15_create_vertex_buffer(pContext, test_quad_vertices, 6u);
 	pOutModel->textures[0] 		= k15_create_texture(pContext, "triangle_test", textureWidth, textureHeight, textureWidth, textureComponents, pImageData);
-	pOutModel->vertexCounts[0] 	= 3u;
+	pOutModel->vertexCounts[0] 	= 6u;
 
 	return true;
 }
@@ -1100,8 +1100,11 @@ void doFrame(float deltaTimeInMs)
 	matrix4x4f_t modelMatrix = {};
 	k15_set_identity_matrix4x4f(&modelMatrix);
 
-	modelMatrix.m11 = -1.0f;
+	modelMatrix.m00 = 10.0f;
+	modelMatrix.m11 = -6.0f;
+	modelMatrix.m22 = 3.0f;
 
+#if 0
 	if( appHasFocus )
 	{
 		POINT mousePos = {};
@@ -1110,7 +1113,7 @@ void doFrame(float deltaTimeInMs)
 		cameraAngles.y -= ( mousePos.y - (screenHeight / 2) ) / 1000.0f;
 		SetCursorPos(screenWidth / 2, screenHeight / 2);
 	}
-
+#endif
 	const float cameraVelocityScale = 0.002f;
 
 	matrix4x4f_t cameraOrientationX = {	cosf(cameraAngles.x), 	0.0f, 	sinf(cameraAngles.x), 	0.0f,
