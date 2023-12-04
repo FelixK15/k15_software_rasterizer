@@ -1367,20 +1367,12 @@ constexpr vertex_t k15_create_vertex(vector4f_t position, vector4f_t normal, vec
 
 internal void _k15_generate_barycentric_vertices(pixel_shader_input_t* pOutVertex, barycentric_coordinates_buffer_t barycentricCoordinates, uint32_t barycentricCoordinateCount, const vertex_t* pTriangleVertices)
 {
-    MemoryPrefetch0(barycentricCoordinates.pU);
-    MemoryPrefetch0(barycentricCoordinates.pV);
-    MemoryPrefetch0(pTriangleVertices);
-
-    float* pOutputVertexAttributes = (float*)pOutVertex->pVertexData;
-    const float* pInputVertexAttributes[3] = {
+    float* restrict_modifier pOutputVertexAttributes = (float*)pOutVertex->pVertexData;
+    const float* restrict_modifier pInputVertexAttributes[3] = {
         (const float*)&pTriangleVertices[0],
         (const float*)&pTriangleVertices[1],
         (const float*)&pTriangleVertices[2]
     };
-
-    MemoryPrefetch0(pInputVertexAttributes[0]);
-    MemoryPrefetch0(pInputVertexAttributes[1]);
-    MemoryPrefetch0(pInputVertexAttributes[2]);
 
     const uint32_t attributeCount = sizeof(vertex_t) / sizeof(float);
     uint32_t globalAttributeIndex = 0u;
